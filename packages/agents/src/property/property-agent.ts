@@ -29,39 +29,185 @@ export class PropertyAgent extends BaseAgent {
   async handleMessage(message: Message, context: AgentContext): Promise<AgentResponse> {
     const content = message.content.toLowerCase();
 
+    // Form submissions
+    if (message.content.trimStart().startsWith('{') || content.startsWith('save:')) {
+      return this.handleFormSubmit(message, context);
+    }
+
+    // ADD flows
+    if (content.includes('add') && content.includes('property')) {
+      return this.handleAddProperty(context);
+    }
+    if (content.includes('add') && content.includes('tenant')) {
+      return this.handleAddTenant(context);
+    }
+
+    // VIEW flows
     if (content.includes('rent')) {
-      return this.respond("Here's your rent collection status. Which property would you like details for?", {
-        suggestions: ['All properties', 'Overdue rents only', 'Send rent reminder'],
-      });
+      return this.handleViewRent(context);
     }
     if (content.includes('tenant')) {
-      return this.respond("I can help manage your tenants. What do you need?", {
-        suggestions: ['List all tenants', 'Add new tenant', 'Tenant contact info', 'Lease expiring soon'],
-      });
+      return this.handleViewTenants(context);
+    }
+    if (content.includes('property') || content.includes('properties')) {
+      return this.handleViewProperties(context);
     }
     if (content.includes('maintenance') || content.includes('repair')) {
       return this.respond("I'll help with maintenance tracking. What needs attention?", {
-        suggestions: ['Log new request', 'Pending repairs', 'Find a plumber', 'Maintenance history'],
+        suggestions: ['Log new request', 'Pending repairs'],
       });
     }
 
     return this.respond("I manage your properties, tenants, and rent collection. How can I help?", {
-      suggestions: ['Rent status', 'My properties', 'Tenant list', 'Maintenance'],
+      suggestions: ['My properties', 'Add a property', 'Add a tenant', 'Rent status'],
     });
   }
 
   async getInsights(context: AgentContext): Promise<Insight[]> {
-    return [
-      this.insight('Rent Overdue', 'Flat 2B rent overdue by 5 days ($800)', 'high', {
-        label: 'Send Reminder',
-        type: 'confirm_action',
-        payload: { action: 'send_rent_reminder', tenantId: 'example' },
-      }),
-      this.insight('Lease Expiring', 'Tenant John\'s lease expires in 30 days', 'medium', {
-        label: 'Review Lease',
-        type: 'navigate',
-        payload: { screen: 'lease_details' },
-      }),
-    ];
+    const insights: Insight[] = [];
+    try {
+      const rents = context.vault.getForAgent(context.userId, context.agentId, 'rent_records');
+      const overdue = rents.filter(r => r.data.status === 'overdue');
+      if (overdue.length > 0) {
+        insights.push(
+          this.insight(`${overdue.length} Rent(s) Overdue`, `Total overdue: $${overdue.reduce((s, r) => s + (Number(r.data.amount) || 0), 0)}`, 'high')
+        );
+      }
+    } catch { /* no permission */ }
+    return insights;
+  }
+
+  private async handleAddProperty(context: AgentContext): Promise<AgentResponse> {
+    return this.respond("Let's add your property:", {
+      actions: [{
+        type: 'show_widget',
+        payload: {
+          widget: 'inline_form',
+          form: {
+            id: 'add_property',
+            category: 'properties',
+            fields: [
+              { name: 'name', label: 'Property Name', type: 'text', placeholder: 'e.g. Downtown Apartment 2B', required: true },
+              { name: 'type', label: 'Type', type: 'select', options: ['Apartment', 'House', 'Villa', 'Commercial', 'Land', 'Other'] },
+              { name: 'address', label: 'Address', type: 'text', placeholder: '123 Main St, City', required: true },
+              { name: 'rentAmount', label: 'Monthly Rent ($)', type: 'number', placeholder: '800' },
+              { name: 'purchasePrice', label: 'Purchase Price ($)', type: 'number', placeholder: '250000' },
+              { name: 'notes', label: 'Notes', type: 'text', placeholder: 'Any details...' },
+            ],
+          },
+        },
+      }],
+    });
+  }
+
+  private async handleAddTenant(context: AgentContext): Promise<AgentResponse> {
+    return this.respond("Let's add a tenant:", {
+      actions: [{
+        type: 'show_widget',
+        payload: {
+          widget: 'inline_form',
+          form: {
+            id: 'add_tenant',
+            category: 'tenants',
+            fields: [
+              { name: 'name', label: 'Tenant Name', type: 'text', placeholder: 'John Doe', required: true },
+              { name: 'phone', label: 'Phone', type: 'text', placeholder: '+1-555-0123' },
+              { name: 'email', label: 'Email', type: 'text', placeholder: 'john@email.com' },
+              { name: 'property', label: 'Property', type: 'text', placeholder: 'Which property?', required: true },
+              { name: 'rentAmount', label: 'Monthly Rent ($)', type: 'number', placeholder: '800', required: true },
+              { name: 'leaseStart', label: 'Lease Start', type: 'date' },
+              { name: 'leaseEnd', label: 'Lease End', type: 'date' },
+            ],
+          },
+        },
+      }],
+    });
+  }
+
+  private async handleViewProperties(context: AgentContext): Promise<AgentResponse> {
+    try {
+      const props = context.vault.getForAgent(context.userId, context.agentId, 'properties');
+      if (props.length === 0) {
+        return this.respond("No properties added yet. Let's add your first one!", {
+          suggestions: ['Add a property'],
+        });
+      }
+      const lines = props.map((p, i) => `${i + 1}. ${p.data.name} — ${p.data.type || 'Property'}${p.data.address ? ` (${p.data.address})` : ''}${p.data.rentAmount ? ` · Rent: $${p.data.rentAmount}/mo` : ''}`).join('\n');
+      return this.respond(`Your properties (${props.length}):\n\n${lines}`, {
+        suggestions: ['Add a property', 'Add a tenant', 'Rent status'],
+      });
+    } catch {
+      return this.respond("I need permission to access your property data.", {
+        actions: [{ type: 'request_permission', payload: { resource: 'properties', reason: 'To manage your property portfolio' } }],
+      });
+    }
+  }
+
+  private async handleViewTenants(context: AgentContext): Promise<AgentResponse> {
+    try {
+      const tenants = context.vault.getForAgent(context.userId, context.agentId, 'tenants');
+      if (tenants.length === 0) {
+        return this.respond("No tenants added yet. Add one to start tracking rent.", {
+          suggestions: ['Add a tenant'],
+        });
+      }
+      const lines = tenants.map((t, i) => `${i + 1}. ${t.data.name} — ${t.data.property || 'Unassigned'}${t.data.rentAmount ? ` · $${t.data.rentAmount}/mo` : ''}`).join('\n');
+      return this.respond(`Your tenants (${tenants.length}):\n\n${lines}`, {
+        suggestions: ['Add a tenant', 'Rent status'],
+      });
+    } catch {
+      return this.respond("I need permission to access tenant data.", {
+        actions: [{ type: 'request_permission', payload: { resource: 'tenants', reason: 'To manage your tenants' } }],
+      });
+    }
+  }
+
+  private async handleViewRent(context: AgentContext): Promise<AgentResponse> {
+    try {
+      const rents = context.vault.getForAgent(context.userId, context.agentId, 'rent_records');
+      if (rents.length === 0) {
+        return this.respond("No rent records yet. Add tenants first, then track their payments.", {
+          suggestions: ['Add a tenant', 'My properties'],
+        });
+      }
+      const lines = rents.map((r, i) => `${i + 1}. ${r.data.tenant} — $${r.data.amount} [${r.data.status || 'recorded'}]`).join('\n');
+      return this.respond(`Rent records:\n\n${lines}`, {
+        suggestions: ['Add a tenant', 'My properties'],
+      });
+    } catch {
+      return this.respond("I need permission to access rent records.", {
+        actions: [{ type: 'request_permission', payload: { resource: 'rent_records', reason: 'To track rent collection' } }],
+      });
+    }
+  }
+
+  private async handleFormSubmit(message: Message, context: AgentContext): Promise<AgentResponse> {
+    try {
+      let raw = message.content;
+      if (raw.startsWith('save:')) raw = raw.slice(5);
+      const parsed = JSON.parse(raw);
+      const { _formId, _category, ...data } = parsed;
+      const category = _category || 'properties';
+      const key = `${category}-${Date.now()}`;
+
+      try {
+        context.vault.putForAgent(context.userId, context.agentId, category, key, {
+          ...data, createdAt: new Date().toISOString(),
+        });
+      } catch {
+        context.vault.put(context.userId, category, key, {
+          ...data, createdAt: new Date().toISOString(),
+        }, 'agent', context.agentId);
+      }
+
+      const label = data.name || data.property || category;
+      return this.respond(`Saved! "${label}" has been added.`, {
+        suggestions: ['My properties', 'My tenants', 'Add another'],
+      });
+    } catch {
+      return this.respond("Couldn't save that. Please try again.", {
+        suggestions: ['Add a property', 'Add a tenant'],
+      });
+    }
   }
 }

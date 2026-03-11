@@ -72,13 +72,14 @@ const App = {
   async installAgent(agentId) {
     try {
       await API.installAgent(agentId);
-      // Auto-grant basic read permissions for required resources
+      // Auto-grant read+write permissions for required resources
       const available = await API.getAvailableAgents();
       const agent = available.find(a => a.id === agentId);
       if (agent) {
-        for (const resource of agent.requiredPermissions) {
+        const allResources = [...agent.requiredPermissions, ...(agent.optionalPermissions || [])];
+        for (const resource of allResources) {
           try {
-            await API.grantPermission(agentId, resource, 'observe', ['read'], '30d');
+            await API.grantPermission(agentId, resource, 'act_with_approval', ['read', 'write'], '90d');
           } catch(e) { /* some resources may not match enum */ }
         }
       }
@@ -169,7 +170,7 @@ const App = {
         `;
       }
 
-      // Handle permission request actions
+      // Handle actions
       let actionsHtml = '';
       if (response.actions) {
         response.actions.forEach(action => {
@@ -182,8 +183,14 @@ const App = {
               </div>
             `;
           }
+          if (action.type === 'show_widget' && action.payload.widget === 'inline_form') {
+            actionsHtml += App.renderInlineForm(action.payload.form, response.agentId);
+          }
         });
       }
+
+      // Format content with newlines
+      const formattedContent = esc(response.content).replace(/\n/g, '<br/>');
 
       messages.innerHTML += `
         <div class="message agent">
@@ -191,7 +198,7 @@ const App = {
           <div>
             <div class="message-bubble">
               <strong style="font-size:11px;color:var(--text-dim);display:block;margin-bottom:4px">${esc(response.agentId)}</strong>
-              ${esc(response.content)}
+              ${formattedContent}
               ${actionsHtml}
             </div>
             ${suggestionsHtml}
@@ -214,6 +221,121 @@ const App = {
   useSuggestion(text) {
     document.getElementById('chatInput').value = text;
     this.sendChat();
+  },
+
+  // ─── Inline Forms ──────────────────────────────
+
+  renderInlineForm(form, agentId) {
+    const formId = 'form-' + Date.now();
+    const fieldsHtml = form.fields.map(f => {
+      let inputHtml = '';
+      if (f.type === 'select') {
+        inputHtml = `<select name="${f.name}" class="chat-input" style="width:100%;padding:8px 12px">
+          ${f.options.map(o => `<option value="${o}" ${f.value === o ? 'selected' : ''}>${o}</option>`).join('')}
+        </select>`;
+      } else if (f.type === 'date') {
+        inputHtml = `<input type="date" name="${f.name}" class="chat-input" style="width:100%;padding:8px 12px" value="${new Date().toISOString().split('T')[0]}" />`;
+      } else {
+        inputHtml = `<input type="${f.type || 'text'}" name="${f.name}" class="chat-input" style="width:100%;padding:8px 12px" placeholder="${f.placeholder || ''}" ${f.required ? 'required' : ''} />`;
+      }
+      return `
+        <div style="margin-bottom:10px">
+          <label style="font-size:12px;color:var(--text-muted);display:block;margin-bottom:4px">${f.label}${f.required ? ' *' : ''}</label>
+          ${inputHtml}
+        </div>
+      `;
+    }).join('');
+
+    return `
+      <div id="${formId}" style="margin-top:12px;padding:14px;background:var(--bg);border:1px solid var(--border-light);border-radius:var(--radius-sm)">
+        ${fieldsHtml}
+        <button class="btn btn-primary" style="width:100%;margin-top:4px" onclick="App.submitInlineForm('${formId}', '${form.id}', '${form.category}', '${agentId}')">
+          Save
+        </button>
+      </div>
+    `;
+  },
+
+  async submitInlineForm(formId, formType, category, agentId) {
+    const formEl = document.getElementById(formId);
+    if (!formEl) return;
+
+    const inputs = formEl.querySelectorAll('input, select');
+    const data = { _formId: formType, _category: category };
+    let hasRequired = true;
+
+    inputs.forEach(input => {
+      const val = input.value.trim();
+      if (input.required && !val) {
+        hasRequired = false;
+        input.style.borderColor = 'var(--red)';
+      } else {
+        input.style.borderColor = '';
+      }
+      if (val) {
+        // Auto-convert numbers
+        data[input.name] = input.type === 'number' ? parseFloat(val) : val;
+      }
+    });
+
+    if (!hasRequired) return;
+
+    // Disable the save button
+    const btn = formEl.querySelector('button');
+    btn.disabled = true;
+    btn.textContent = 'Saving...';
+
+    // Send as a message to the agent
+    const saveText = JSON.stringify(data);
+    const messages = document.getElementById('chatMessages');
+
+    // Show compact user message
+    messages.innerHTML += `
+      <div class="message user">
+        <div class="message-avatar">P</div>
+        <div><div class="message-bubble" style="font-size:12px">Submitted ${category} data</div></div>
+      </div>
+    `;
+
+    // Remove the form
+    formEl.innerHTML = '<div style="text-align:center;color:var(--green);font-size:12px;padding:8px">Submitted!</div>';
+
+    try {
+      const response = await API.sendMessage(saveText, agentId);
+      const agentIcon = AGENT_ICONS[response.agentId] || { emoji: 'M' };
+      const emojiStr = response.agentId !== 'system' ? agentIcon.emoji : 'M';
+
+      let suggestionsHtml = '';
+      if (response.suggestions && response.suggestions.length > 0) {
+        suggestionsHtml = `
+          <div class="message-suggestions">
+            ${response.suggestions.map(s => `<span class="suggestion-chip" onclick="App.useSuggestion('${esc(s)}')">${esc(s)}</span>`).join('')}
+          </div>
+        `;
+      }
+
+      messages.innerHTML += `
+        <div class="message agent">
+          <div class="message-avatar">${emojiStr}</div>
+          <div>
+            <div class="message-bubble">
+              <strong style="font-size:11px;color:var(--text-dim);display:block;margin-bottom:4px">${esc(response.agentId)}</strong>
+              ${esc(response.content)}
+            </div>
+            ${suggestionsHtml}
+          </div>
+        </div>
+      `;
+    } catch (err) {
+      messages.innerHTML += `
+        <div class="message agent">
+          <div class="message-avatar">!</div>
+          <div><div class="message-bubble" style="border-color:var(--red)">Error saving: ${esc(err.message)}</div></div>
+        </div>
+      `;
+    }
+
+    messages.scrollTop = messages.scrollHeight;
   },
 
   async grantPermFromChat(agentId, resource) {

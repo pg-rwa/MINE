@@ -437,8 +437,10 @@ body {
 .message {
   display: flex;
   gap: 12px;
-  max-width: 80%;
+  max-width: 85%;
 }
+
+.message:has(.inline-form) { max-width: 95%; }
 
 .message.user {
   align-self: flex-end;
