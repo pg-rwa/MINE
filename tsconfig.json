@@ -9,16 +9,15 @@
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
     "declaration": true,
-    "declarationMap": true,
     "sourceMap": true,
     "outDir": "dist",
-    "jsx": "react-jsx"
+    "rootDir": "src",
+    "jsx": "react-jsx",
+    "paths": {
+      "@mine/core": ["./packages/core/src"],
+      "@mine/agents": ["./packages/agents/src"],
+      "@mine/sdk": ["./packages/sdk/src"]
+    }
   },
-  "references": [
-    { "path": "./packages/core" },
-    { "path": "./packages/agents" },
-    { "path": "./packages/api" },
-    { "path": "./packages/app" },
-    { "path": "./packages/sdk" }
-  ]
+  "include": ["packages/*/src/**/*.ts", "packages/*/src/**/*.tsx"]
 }
