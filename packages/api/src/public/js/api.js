@@ -6,13 +6,10 @@ const API = {
   base: '',
 
   async request(method, path, body) {
-    const opts = {
-      method,
-      headers: {
-        'Content-Type': 'application/json',
-        'x-user-id': this.userId,
-      },
-    };
+    const headers = { 'x-user-id': this.userId };
+    if (body) headers['Content-Type'] = 'application/json';
+
+    const opts = { method, headers };
     if (body) opts.body = JSON.stringify(body);
 
     const res = await fetch(`${this.base}${path}`, opts);
