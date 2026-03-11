@@ -1,5 +1,8 @@
+import path from 'path';
+import { fileURLToPath } from 'url';
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
+import fastifyStatic from '@fastify/static';
 import {
   AgentRuntime,
   AgentRegistry,
@@ -53,6 +56,13 @@ export async function createApp(ctx: AppContext) {
   await app.register(vaultRoutes(ctx), { prefix: '/api/vault' });
   await app.register(insightRoutes(ctx), { prefix: '/api/insights' });
   await app.register(integrationRoutes(ctx), { prefix: '/api/integrations' });
+
+  // Serve frontend static files
+  const __dirname = path.dirname(fileURLToPath(import.meta.url));
+  await app.register(fastifyStatic, {
+    root: path.join(__dirname, 'public'),
+    prefix: '/',
+  });
 
   // Health check
   app.get('/health', async () => ({ status: 'ok', version: '0.1.0' }));

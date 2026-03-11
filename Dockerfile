@@ -9,7 +9,7 @@ COPY packages/agents/package.json packages/agents/
 COPY packages/api/package.json packages/api/
 COPY packages/sdk/package.json packages/sdk/
 
-RUN npm ci --omit=dev && npm install tsx
+RUN npm ci
 
 # Copy source
 COPY packages/ packages/
