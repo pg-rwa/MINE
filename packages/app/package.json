@@ -1,0 +1,19 @@
+{
+  "name": "@mine/app",
+  "version": "0.1.0",
+  "private": true,
+  "dependencies": {
+    "react": "^18.3.0",
+    "react-native": "^0.75.0",
+    "expo": "^52.0.0",
+    "@mine/core": "*"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0"
+  },
+  "scripts": {
+    "dev": "expo start",
+    "build": "expo export",
+    "lint": "eslint src/"
+  }
+}

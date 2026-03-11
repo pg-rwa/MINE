@@ -1,0 +1,23 @@
+{
+  "name": "mine-super-app",
+  "version": "0.1.0",
+  "private": true,
+  "description": "MINE - My Intelligent Network of Everything. A personal super app powered by AI agents.",
+  "workspaces": [
+    "packages/core",
+    "packages/agents",
+    "packages/api",
+    "packages/app",
+    "packages/sdk"
+  ],
+  "scripts": {
+    "dev:api": "npm run dev --workspace=packages/api",
+    "dev:app": "npm run dev --workspace=packages/app",
+    "build": "npm run build --workspaces",
+    "test": "npm run test --workspaces",
+    "lint": "npm run lint --workspaces"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

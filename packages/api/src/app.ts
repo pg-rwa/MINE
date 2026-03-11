@@ -1,0 +1,61 @@
+import Fastify from 'fastify';
+import cors from '@fastify/cors';
+import {
+  AgentRuntime,
+  AgentRegistry,
+  MessageRouter,
+  PermissionEngine,
+  DataVault,
+  AuditLog,
+  Scheduler,
+  Notifier,
+  IntegrationGateway,
+  WorkflowEngine,
+  AgentMarketplace,
+} from '@mine/core';
+import { agentRoutes } from './routes/agents';
+import { messageRoutes } from './routes/messages';
+import { permissionRoutes } from './routes/permissions';
+import { vaultRoutes } from './routes/vault';
+import { insightRoutes } from './routes/insights';
+import { integrationRoutes } from './routes/integrations';
+
+export interface AppContext {
+  runtime: AgentRuntime;
+  registry: AgentRegistry;
+  router: MessageRouter;
+  permissions: PermissionEngine;
+  vault: DataVault;
+  auditLog: AuditLog;
+  scheduler: Scheduler;
+  notifier: Notifier;
+  integrations: IntegrationGateway;
+  workflows: WorkflowEngine;
+  marketplace: AgentMarketplace;
+}
+
+export async function createApp(ctx: AppContext) {
+  const app = Fastify({ logger: true });
+
+  await app.register(cors, { origin: true });
+
+  // Decorate request with user context (simplified — production uses JWT)
+  app.decorateRequest('userId', '');
+  app.addHook('onRequest', async (request) => {
+    // In production: verify JWT, extract userId
+    (request as any).userId = request.headers['x-user-id'] as string || 'demo-user';
+  });
+
+  // Register route modules
+  await app.register(agentRoutes(ctx), { prefix: '/api/agents' });
+  await app.register(messageRoutes(ctx), { prefix: '/api/messages' });
+  await app.register(permissionRoutes(ctx), { prefix: '/api/permissions' });
+  await app.register(vaultRoutes(ctx), { prefix: '/api/vault' });
+  await app.register(insightRoutes(ctx), { prefix: '/api/insights' });
+  await app.register(integrationRoutes(ctx), { prefix: '/api/integrations' });
+
+  // Health check
+  app.get('/health', async () => ({ status: 'ok', version: '0.1.0' }));
+
+  return app;
+}

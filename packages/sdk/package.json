@@ -1,0 +1,16 @@
+{
+  "name": "@mine/sdk",
+  "version": "0.1.0",
+  "description": "SDK for building third-party agents for the MINE platform",
+  "main": "src/index.ts",
+  "dependencies": {
+    "@mine/core": "*"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0"
+  },
+  "scripts": {
+    "build": "tsc",
+    "lint": "eslint src/"
+  }
+}
