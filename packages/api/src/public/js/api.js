@@ -54,4 +54,12 @@ const API = {
   // Insights
   getInsights() { return this.get('/api/insights'); },
   getAuditLog() { return this.get('/api/insights/audit'); },
+
+  // Integrations
+  getAvailableIntegrations() { return this.get('/api/integrations/available'); },
+  getUserConnections() { return this.get('/api/integrations/connections'); },
+  startAuth(integrationId) { return this.post('/api/integrations/auth/start', { integrationId }); },
+  connectDemo(integrationId) { return this.post('/api/integrations/connect/demo', { integrationId }); },
+  disconnectIntegration(connectionId) { return this.post(`/api/integrations/disconnect/${connectionId}`); },
+  syncIntegration(connectionId) { return this.post(`/api/integrations/sync/${connectionId}`); },
 };

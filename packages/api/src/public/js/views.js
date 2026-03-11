@@ -149,6 +149,82 @@ const Views = {
     `;
   },
 
+  // ─── Integrations ──────────────────────────────
+  async integrations() {
+    const [available, connections] = await Promise.all([
+      API.getAvailableIntegrations(),
+      API.getUserConnections(),
+    ]);
+
+    const connectedIds = new Set(connections.map(c => c.integrationId));
+
+    const activeSection = connections.length > 0 ? `
+      <div class="section-header">
+        <h2 class="section-title">Connected (${connections.length})</h2>
+      </div>
+      <div class="agent-grid" style="margin-bottom:32px">
+        ${connections.map(c => {
+          const info = available.find(a => a.id === c.integrationId) || { name: c.integrationId, icon: '🔗', description: '' };
+          return `
+            <div class="agent-card" style="border-color:var(--green);border-width:1px">
+              <div class="agent-card-header">
+                <div class="agent-icon" style="background:var(--green-bg);font-size:22px">${info.icon}</div>
+                <div>
+                  <div class="agent-name">${esc(info.name)}</div>
+                  <div class="agent-category" style="color:var(--green)">Connected</div>
+                </div>
+              </div>
+              <div class="agent-description">${esc(info.description)}</div>
+              <div class="agent-actions">
+                <button class="btn btn-sm btn-secondary" onclick="App.syncIntegration('${c.id}')">Sync Now</button>
+                <button class="btn btn-sm btn-danger" onclick="App.disconnectIntegration('${c.id}')">Disconnect</button>
+              </div>
+            </div>
+          `;
+        }).join('')}
+      </div>
+    ` : '';
+
+    const availableSection = available.filter(a => !connectedIds.has(a.id));
+
+    return `
+      <div class="section-header" style="margin-bottom:8px">
+        <h2 class="section-title">Connect Your Apps</h2>
+      </div>
+      <p style="color:var(--text-muted);font-size:13px;margin-bottom:24px">
+        Connect external services to auto-sync your data. Your credentials are encrypted and you can disconnect anytime.
+      </p>
+
+      ${activeSection}
+
+      <div class="section-header">
+        <h2 class="section-title">Available Integrations (${availableSection.length})</h2>
+      </div>
+      <div class="agent-grid">
+        ${availableSection.map(i => `
+          <div class="agent-card">
+            <div class="agent-card-header">
+              <div class="agent-icon" style="background:var(--bg);font-size:22px">${i.icon}</div>
+              <div>
+                <div class="agent-name">${esc(i.name)}</div>
+                <div class="agent-category">${i.authType.toUpperCase()} ${i.status === 'coming_soon' ? '· COMING SOON' : ''}</div>
+              </div>
+            </div>
+            <div class="agent-description">${esc(i.description)}</div>
+            <div class="agent-capabilities">
+              ${i.categories.map(c => `<span class="cap-tag">${esc(c)}</span>`).join('')}
+            </div>
+            <div class="agent-actions">
+              ${i.status === 'coming_soon'
+                ? `<button class="btn btn-sm btn-secondary" disabled>Coming Soon</button>`
+                : `<button class="btn btn-sm btn-primary" onclick="App.connectIntegration('${i.id}')">Connect</button>`}
+            </div>
+          </div>
+        `).join('')}
+      </div>
+    `;
+  },
+
   // ─── Permissions ───────────────────────────────
   async permissions() {
     const perms = await API.getPermissions();

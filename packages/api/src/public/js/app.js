@@ -41,6 +41,7 @@ const App = {
       dashboard: 'Dashboard',
       agents: 'Agent Store',
       chat: 'Chat with Agents',
+      integrations: 'Integrations',
       permissions: 'Privacy & Permissions',
       vault: 'Data Vault',
       audit: 'Audit Log',
@@ -347,6 +348,48 @@ const App = {
       await this.sendChat();
     } catch (err) {
       alert('Failed to grant permission: ' + err.message);
+    }
+  },
+
+  // ─── Integrations ─────────────────────────────
+
+  async connectIntegration(integrationId) {
+    try {
+      const result = await API.startAuth(integrationId);
+
+      if (result.status === 'redirect' && result.authUrl) {
+        // Real OAuth — redirect to provider
+        window.location.href = result.authUrl;
+      } else if (result.status === 'not_configured') {
+        // API keys not set — offer demo connect
+        if (confirm(`${result.message}\n\nWould you like to connect in demo mode instead?`)) {
+          await API.connectDemo(integrationId);
+          await this.navigate('integrations');
+        }
+      } else if (result.error === 'coming_soon') {
+        alert(result.message);
+      }
+    } catch (err) {
+      // Fallback: demo connect
+      if (confirm(`OAuth not configured yet. Connect in demo mode?`)) {
+        await API.connectDemo(integrationId);
+        await this.navigate('integrations');
+      }
+    }
+  },
+
+  async disconnectIntegration(connectionId) {
+    if (!confirm('Disconnect this integration?')) return;
+    await API.disconnectIntegration(connectionId);
+    await this.navigate('integrations');
+  },
+
+  async syncIntegration(connectionId) {
+    try {
+      await API.syncIntegration(connectionId);
+      alert('Sync triggered successfully!');
+    } catch (err) {
+      alert('Sync failed: ' + err.message);
     }
   },
 

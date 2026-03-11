@@ -30,6 +30,17 @@ async function main() {
   const workflows = new WorkflowEngine();
   const marketplace = new AgentMarketplace();
 
+  // ─── Register Integrations ────────────────────────
+  const integrationConfigs = [
+    { id: 'gmail', name: 'Gmail', type: 'oauth2' as const, provider: 'google', dataCategory: 'transactions' as const, syncInterval: 30, config: {} },
+    { id: 'google-calendar', name: 'Google Calendar', type: 'oauth2' as const, provider: 'google', dataCategory: 'calendar' as const, syncInterval: 15, config: {} },
+    { id: 'plaid', name: 'Bank Accounts', type: 'oauth2' as const, provider: 'plaid', dataCategory: 'bank_accounts' as const, syncInterval: 60, config: {} },
+    { id: 'telegram', name: 'Telegram', type: 'webhook' as const, provider: 'telegram', dataCategory: 'messages' as const, syncInterval: 0, config: {} },
+  ];
+  for (const cfg of integrationConfigs) {
+    integrations.registerIntegration(cfg);
+  }
+
   // ─── Initialize Agent System ───────────────────────
   const runtime = new AgentRuntime(permissions, vault, auditLog);
   const registry = new AgentRegistry();
