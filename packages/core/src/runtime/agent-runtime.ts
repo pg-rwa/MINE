@@ -3,6 +3,7 @@ import { AgentManifest, Message, AgentResponse, SystemEvent, Insight } from '../
 import { PermissionEngine } from '../permissions/permission-engine';
 import { DataVault } from '../vault/data-vault';
 import { AuditLog } from '../audit/audit-log';
+import { AIEngine } from '../ai/ai-engine';
 
 /**
  * The interface every agent must implement.
@@ -41,6 +42,7 @@ export interface AgentContext {
   permissions: PermissionEngine;
   vault: DataVault;
   audit: AuditLog;
+  aiEngine: AIEngine;
 
   /** Send a message to another agent (requires inter-agent permission) */
   sendToAgent(targetAgentId: string, message: string): Promise<AgentResponse | null>;
@@ -53,6 +55,9 @@ export interface AgentContext {
 
   /** Send a notification to the user */
   notify(title: string, body: string, priority?: 'low' | 'medium' | 'high' | 'urgent'): Promise<void>;
+
+  /** List all active agent IDs and names */
+  listActiveAgents(): Array<{ id: string; name: string; description: string }>;
 }
 
 interface RuntimeEvents {
@@ -72,12 +77,14 @@ export class AgentRuntime extends EventEmitter<RuntimeEvents> {
   private permissions: PermissionEngine;
   private vault: DataVault;
   private auditLog: AuditLog;
+  private aiEngine: AIEngine;
 
-  constructor(permissions: PermissionEngine, vault: DataVault, auditLog: AuditLog) {
+  constructor(permissions: PermissionEngine, vault: DataVault, auditLog: AuditLog, aiEngine?: AIEngine) {
     super();
     this.permissions = permissions;
     this.vault = vault;
     this.auditLog = auditLog;
+    this.aiEngine = aiEngine ?? new AIEngine({ provider: 'claude', model: 'claude-sonnet-4-6' });
   }
 
   /**
@@ -247,6 +254,14 @@ export class AgentRuntime extends EventEmitter<RuntimeEvents> {
       permissions: this.permissions,
       vault: this.vault,
       audit: this.auditLog,
+      aiEngine: this.aiEngine,
+
+      listActiveAgents: () => {
+        return Array.from(this.activeAgents)
+          .map(id => this.agents.get(id))
+          .filter((a): a is IAgent => !!a)
+          .map(a => ({ id: a.manifest.id, name: a.manifest.name, description: a.manifest.description }));
+      },
 
       sendToAgent: async (targetAgentId: string, message: string) => {
         const check = this.permissions.check(userId, agentId, 'messages' as any, 'read', 'act_with_approval');

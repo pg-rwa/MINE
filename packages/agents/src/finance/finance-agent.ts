@@ -36,38 +36,41 @@ export class FinanceAgent extends BaseAgent {
       return this.handleFormSubmit(message, context);
     }
 
+    // Analyze the user's actual intent
+    const intent = this.analyzeIntent(message, context);
+
     // ─── ADD flows (data collection) ────────────────
-    if (content.includes('add') && (content.includes('emi') || content.includes('loan'))) {
-      return this.handleAddEMI(message, context);
-    }
-    if (content.includes('add') && (content.includes('expense') || content.includes('spent'))) {
-      return this.handleAddExpense(message, context);
-    }
-    if (content.includes('add') && (content.includes('income') || content.includes('salary'))) {
-      return this.handleAddIncome(message, context);
+    if (intent.primaryAction === 'add' || (content.includes('add') && this.isFinanceTopic(content))) {
+      if (content.includes('emi') || content.includes('loan')) {
+        return this.handleAddEMI(message, context);
+      }
+      if (content.includes('expense') || content.includes('spent')) {
+        return this.handleAddExpense(message, context);
+      }
+      if (content.includes('income') || content.includes('salary')) {
+        return this.handleAddIncome(message, context);
+      }
     }
 
-    // ─── VIEW flows ─────────────────────────────────
+    // ─── VIEW / CHECK flows — now context-aware ─────
     if (content.includes('expense') || content.includes('spent') || content.includes('spending')) {
-      return this.handleViewExpenses(message, context);
+      return this.handleViewExpenses(message, context, intent);
     }
-    if (content.includes('emi') || content.includes('loan')) {
-      return this.handleViewEMIs(message, context);
+    if (content.includes('emi') || content.includes('loan') || content.includes('installment')) {
+      return this.handleViewEMIs(message, context, intent);
     }
     if (content.includes('income') || content.includes('salary')) {
-      return this.handleViewIncome(message, context);
+      return this.handleViewIncome(message, context, intent);
     }
     if (content.includes('balance') || content.includes('net worth') || content.includes('summary')) {
-      return this.handleSummary(message, context);
+      return this.handleSummary(message, context, intent);
     }
     if (content.includes('budget')) {
       return this.handleBudget(message, context);
     }
 
-    return this.respond(
-      "I can help you manage your finances. What would you like to do?",
-      { suggestions: ['Show my EMIs', 'Add an expense', 'Add EMI', 'Monthly summary'] }
-    );
+    // ─── Fallback — use intent to give a more helpful response ───
+    return this.handleGenericFinanceQuery(message, context, intent);
   }
 
   async getInsights(context: AgentContext): Promise<Insight[]> {
@@ -93,10 +96,14 @@ export class FinanceAgent extends BaseAgent {
     return insights;
   }
 
+  private isFinanceTopic(content: string): boolean {
+    const topics = ['emi', 'loan', 'expense', 'income', 'salary', 'budget', 'spent'];
+    return topics.some(t => content.includes(t));
+  }
+
   // ─── ADD Handlers ──────────────────────────────────
 
   private async handleAddEMI(_message: Message, context: AgentContext): Promise<AgentResponse> {
-    // Determine EMI type from message
     const content = _message.content.toLowerCase();
     let emiType = 'Home Loan';
     if (content.includes('car')) emiType = 'Car Loan';
@@ -190,18 +197,15 @@ export class FinanceAgent extends BaseAgent {
       const parsed = JSON.parse(raw);
       const { _formId, _category, ...data } = parsed;
 
-      // Determine category and key from the form
       const category = _category || 'expenses';
       const key = `${category}-${Date.now()}`;
 
-      // Ensure write permission
       try {
         context.vault.putForAgent(context.userId, context.agentId, category, key, {
           ...data,
           createdAt: new Date().toISOString(),
         });
       } catch {
-        // Try direct put if agent write not permitted
         context.vault.put(context.userId, category, key, {
           ...data,
           createdAt: new Date().toISOString(),
@@ -223,36 +227,39 @@ export class FinanceAgent extends BaseAgent {
     }
   }
 
-  // ─── VIEW Handlers ─────────────────────────────────
+  // ─── VIEW Handlers (now context-aware) ────────────
 
-  private async handleViewEMIs(_message: Message, context: AgentContext): Promise<AgentResponse> {
+  private async handleViewEMIs(_message: Message, context: AgentContext, intent: ReturnType<typeof this.analyzeIntent>): Promise<AgentResponse> {
     try {
       const emis = context.vault.getForAgent(context.userId, context.agentId, 'emis');
       if (emis.length === 0) {
-        return this.respond(
-          "You haven't added any EMIs yet. Let's add your first one!",
-          {
-            suggestions: ['Add home loan EMI', 'Add car loan EMI', 'Add personal loan EMI'],
-            actions: [{
-              type: 'show_widget',
-              payload: {
-                widget: 'inline_form',
-                form: {
-                  id: 'add_emi',
-                  category: 'emis',
-                  fields: [
-                    { name: 'name', label: 'EMI Name', type: 'text', placeholder: 'e.g. Home Loan - HDFC', required: true },
-                    { name: 'type', label: 'Loan Type', type: 'select', options: ['Home Loan', 'Car Loan', 'Personal Loan', 'Education Loan', 'Other'] },
-                    { name: 'amount', label: 'Monthly EMI ($)', type: 'number', placeholder: '1200', required: true },
-                    { name: 'bank', label: 'Bank / Lender', type: 'text', placeholder: 'e.g. HDFC Bank' },
-                    { name: 'dueDay', label: 'Due Day of Month', type: 'number', placeholder: '5', required: true },
-                    { name: 'remainingMonths', label: 'Remaining Months', type: 'number', placeholder: '120' },
-                  ],
-                },
+        // Still acknowledge cross-agent context even when no data
+        const crossNote = this.getCrossAgentContext(intent, context);
+        let noDataMsg = "You haven't added any EMIs yet. Let's add your first one!";
+        if (crossNote) {
+          noDataMsg = `${crossNote}\n\nYou haven't added any EMIs here yet. Let's add your first one!`;
+        }
+        return this.respond(noDataMsg, {
+          suggestions: ['Add home loan EMI', 'Add car loan EMI', 'Add personal loan EMI'],
+          actions: [{
+            type: 'show_widget',
+            payload: {
+              widget: 'inline_form',
+              form: {
+                id: 'add_emi',
+                category: 'emis',
+                fields: [
+                  { name: 'name', label: 'EMI Name', type: 'text', placeholder: 'e.g. Home Loan - HDFC', required: true },
+                  { name: 'type', label: 'Loan Type', type: 'select', options: ['Home Loan', 'Car Loan', 'Personal Loan', 'Education Loan', 'Other'] },
+                  { name: 'amount', label: 'Monthly EMI ($)', type: 'number', placeholder: '1200', required: true },
+                  { name: 'bank', label: 'Bank / Lender', type: 'text', placeholder: 'e.g. HDFC Bank' },
+                  { name: 'dueDay', label: 'Due Day of Month', type: 'number', placeholder: '5', required: true },
+                  { name: 'remainingMonths', label: 'Remaining Months', type: 'number', placeholder: '120' },
+                ],
               },
-            }],
-          }
-        );
+            },
+          }],
+        });
       }
 
       const totalMonthly = emis.reduce((sum, e) => sum + (Number(e.data.amount) || 0), 0);
@@ -260,10 +267,11 @@ export class FinanceAgent extends BaseAgent {
         `${i + 1}. ${e.data.name || e.data.type} — $${e.data.amount}/mo${e.data.bank ? ` (${e.data.bank})` : ''}${e.data.dueDay ? ` · Due: ${e.data.dueDay}th` : ''}`
       ).join('\n');
 
-      return this.respond(
-        `You have ${emis.length} EMI(s) totaling $${totalMonthly}/month:\n\n${lines}`,
-        { suggestions: ['Add another EMI', 'Monthly summary', 'Show expenses'] }
-      );
+      const mainContent = `You have ${emis.length} EMI(s) totaling $${totalMonthly}/month:\n\n${lines}`;
+
+      return this.respondWithContext(intent, context, mainContent, {
+        suggestions: ['Add another EMI', 'Monthly summary', 'Show expenses'],
+      });
     } catch {
       return this.respond("I need permission to access your EMI data.", {
         actions: [{ type: 'request_permission', payload: { resource: 'emis', reason: 'To track and remind you about EMI payments' } }],
@@ -271,7 +279,7 @@ export class FinanceAgent extends BaseAgent {
     }
   }
 
-  private async handleViewExpenses(_message: Message, context: AgentContext): Promise<AgentResponse> {
+  private async handleViewExpenses(_message: Message, context: AgentContext, intent: ReturnType<typeof this.analyzeIntent>): Promise<AgentResponse> {
     try {
       const expenses = context.vault.getForAgent(context.userId, context.agentId, 'expenses');
       if (expenses.length === 0) {
@@ -300,10 +308,11 @@ export class FinanceAgent extends BaseAgent {
         `${i + 1}. ${e.data.name} — $${e.data.amount}${e.data.categoryTag ? ` [${e.data.categoryTag}]` : ''}`
       ).join('\n');
 
-      return this.respond(
-        `Recent expenses (total: $${total}):\n\n${lines}${expenses.length > 10 ? `\n...and ${expenses.length - 10} more` : ''}`,
-        { suggestions: ['Add an expense', 'Show EMIs', 'Monthly summary'] }
-      );
+      const mainContent = `Recent expenses (total: $${total}):\n\n${lines}${expenses.length > 10 ? `\n...and ${expenses.length - 10} more` : ''}`;
+
+      return this.respondWithContext(intent, context, mainContent, {
+        suggestions: ['Add an expense', 'Show EMIs', 'Monthly summary'],
+      });
     } catch {
       return this.respond("I need permission to access your expense data.", {
         actions: [{ type: 'request_permission', payload: { resource: 'expenses', reason: 'To track and categorize your spending' } }],
@@ -311,7 +320,7 @@ export class FinanceAgent extends BaseAgent {
     }
   }
 
-  private async handleViewIncome(_message: Message, context: AgentContext): Promise<AgentResponse> {
+  private async handleViewIncome(_message: Message, context: AgentContext, intent: ReturnType<typeof this.analyzeIntent>): Promise<AgentResponse> {
     try {
       const income = context.vault.getForAgent(context.userId, context.agentId, 'income');
       if (income.length === 0) {
@@ -325,10 +334,11 @@ export class FinanceAgent extends BaseAgent {
         `${i + 1}. ${e.data.source} — $${e.data.amount}${e.data.type ? ` (${e.data.type})` : ''}`
       ).join('\n');
 
-      return this.respond(
-        `Your income sources (total: $${total}):\n\n${lines}`,
-        { suggestions: ['Add income', 'Show expenses', 'Monthly summary'] }
-      );
+      const mainContent = `Your income sources (total: $${total}):\n\n${lines}`;
+
+      return this.respondWithContext(intent, context, mainContent, {
+        suggestions: ['Add income', 'Show expenses', 'Monthly summary'],
+      });
     } catch {
       return this.respond("I need permission to access your income data.", {
         actions: [{ type: 'request_permission', payload: { resource: 'income', reason: 'To track your income sources' } }],
@@ -336,7 +346,7 @@ export class FinanceAgent extends BaseAgent {
     }
   }
 
-  private async handleSummary(_message: Message, context: AgentContext): Promise<AgentResponse> {
+  private async handleSummary(_message: Message, context: AgentContext, intent: ReturnType<typeof this.analyzeIntent>): Promise<AgentResponse> {
     let totalIncome = 0;
     let totalExpenses = 0;
     let totalEMIs = 0;
@@ -359,20 +369,40 @@ export class FinanceAgent extends BaseAgent {
     const totalOutflow = totalExpenses + totalEMIs;
     const net = totalIncome - totalOutflow;
 
-    return this.respond(
+    const mainContent =
       `Financial Summary:\n\n` +
       `Income:   $${totalIncome}\n` +
       `Expenses: $${totalExpenses}\n` +
       `EMIs:     $${totalEMIs}\n` +
       `─────────────\n` +
-      `Net:      $${net} ${net >= 0 ? '(surplus)' : '(deficit)'}`,
-      { suggestions: ['Add income', 'Add expense', 'Show EMIs'] }
-    );
+      `Net:      $${net} ${net >= 0 ? '(surplus)' : '(deficit)'}`;
+
+    return this.respondWithContext(intent, context, mainContent, {
+      suggestions: ['Add income', 'Add expense', 'Show EMIs'],
+    });
   }
 
   private async handleBudget(_message: Message, _context: AgentContext): Promise<AgentResponse> {
     return this.respond("I can help set up a budget. What's your monthly budget limit?", {
       suggestions: ['$2000/month', '$5000/month', '$10000/month', 'Custom amount'],
     });
+  }
+
+  private async handleGenericFinanceQuery(_message: Message, context: AgentContext, intent: ReturnType<typeof this.analyzeIntent>): Promise<AgentResponse> {
+    // If the user asked something that doesn't match our keywords but we can still be helpful
+    const crossNote = this.getCrossAgentContext(intent, context);
+
+    if (crossNote) {
+      // User is asking about something that involves other agents
+      return this.respond(
+        `${crossNote}\n\nAs your Finance Manager, I can help with EMIs, expenses, income, budgets, and net worth tracking. What would you like to do?`,
+        { suggestions: ['Show my EMIs', 'Add an expense', 'Monthly summary', 'Add income'] }
+      );
+    }
+
+    return this.respond(
+      "I can help you manage your finances. What would you like to do?",
+      { suggestions: ['Show my EMIs', 'Add an expense', 'Add EMI', 'Monthly summary'] }
+    );
   }
 }

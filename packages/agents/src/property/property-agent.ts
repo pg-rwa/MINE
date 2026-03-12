@@ -28,6 +28,7 @@ export class PropertyAgent extends BaseAgent {
 
   async handleMessage(message: Message, context: AgentContext): Promise<AgentResponse> {
     const content = message.content.toLowerCase();
+    const intent = this.analyzeIntent(message, context);
 
     // Form submissions
     if (message.content.trimStart().startsWith('{') || content.startsWith('save:')) {
@@ -53,9 +54,19 @@ export class PropertyAgent extends BaseAgent {
       return this.handleViewProperties(context);
     }
     if (content.includes('maintenance') || content.includes('repair')) {
-      return this.respond("I'll help with maintenance tracking. What needs attention?", {
-        suggestions: ['Log new request', 'Pending repairs'],
-      });
+      return this.respondWithContext(intent, context,
+        "I'll help with maintenance tracking. What needs attention?", {
+          suggestions: ['Log new request', 'Pending repairs'],
+        });
+    }
+
+    // Acknowledge cross-agent context in fallback
+    const crossNote = this.getCrossAgentContext(intent, context);
+    if (crossNote) {
+      return this.respond(
+        `${crossNote}\n\nAs your Property Manager, I handle properties, tenants, rent collection, and maintenance. How can I help?`, {
+          suggestions: ['My properties', 'Add a property', 'Add a tenant', 'Rent status'],
+        });
     }
 
     return this.respond("I manage your properties, tenants, and rent collection. How can I help?", {

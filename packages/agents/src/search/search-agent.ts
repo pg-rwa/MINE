@@ -25,7 +25,32 @@ export class SearchAgent extends BaseAgent {
   };
 
   async handleMessage(message: Message, context: AgentContext): Promise<AgentResponse> {
-    // Search agent handles anything that doesn't match other agents
+    const intent = this.analyzeIntent(message, context);
+
+    // If the query relates to a specific agent domain, suggest that agent
+    if (intent.crossAgentRefs.length > 0 || intent.subRequests.some(sr => sr.agentDomain)) {
+      const domains = intent.crossAgentRefs.length > 0
+        ? intent.crossAgentRefs
+        : intent.subRequests.filter(sr => sr.agentDomain).map(sr => sr.agentDomain!);
+
+      const activeAgents = context.listActiveAgents();
+      const relevantAgents = activeAgents.filter(a => domains.includes(a.id));
+
+      if (relevantAgents.length > 0) {
+        const agentNames = relevantAgents.map(a => `**${a.name}**`).join(', ');
+        return this.respond(
+          `I'll search your data for: "${message.content}"\n\nTip: ${agentNames} can give you more detailed, specialized results for this query.`,
+          {
+            suggestions: [
+              ...relevantAgents.map(a => `Ask ${a.name}`),
+              'Search my data only',
+              'Search web',
+            ],
+          }
+        );
+      }
+    }
+
     return this.respond(`Searching across your data and the web for: "${message.content}"`, {
       suggestions: ['Search my data only', 'Search web only', 'Search documents', 'Search contacts'],
     });

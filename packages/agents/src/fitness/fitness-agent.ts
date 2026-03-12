@@ -28,26 +28,40 @@ export class FitnessAgent extends BaseAgent {
 
   async handleMessage(message: Message, context: AgentContext): Promise<AgentResponse> {
     const content = message.content.toLowerCase();
+    const intent = this.analyzeIntent(message, context);
 
     if (content.includes('workout') || content.includes('exercise') || content.includes('gym')) {
-      return this.respond("Let's log your workout! What did you do today?", {
-        suggestions: ['Strength training', 'Running', 'Yoga', 'Custom workout'],
-      });
+      return this.respondWithContext(intent, context,
+        "Let's log your workout! What did you do today?", {
+          suggestions: ['Strength training', 'Running', 'Yoga', 'Custom workout'],
+        });
     }
-    if (content.includes('calorie') || content.includes('food') || content.includes('ate')) {
-      return this.respond("I'll help track your nutrition. What did you eat?", {
-        suggestions: ['Log a meal', 'Today\'s calories', 'Macro breakdown', 'Meal suggestions'],
-      });
+    if (content.includes('calorie') || content.includes('food') || content.includes('ate') || content.includes('meal')) {
+      return this.respondWithContext(intent, context,
+        "I'll help track your nutrition. What did you eat?", {
+          suggestions: ['Log a meal', 'Today\'s calories', 'Macro breakdown', 'Meal suggestions'],
+        });
     }
     if (content.includes('weight')) {
-      return this.respond("Let me check your weight trend. Would you like to log today's weight?", {
-        suggestions: ['Log weight', 'Show weight chart', 'Set target weight'],
-      });
+      return this.respondWithContext(intent, context,
+        "Let me check your weight trend. Would you like to log today's weight?", {
+          suggestions: ['Log weight', 'Show weight chart', 'Set target weight'],
+        });
     }
     if (content.includes('sleep')) {
-      return this.respond("How was your sleep? I can help track your sleep patterns.", {
-        suggestions: ['Log last night\'s sleep', 'Sleep trend', 'Set bedtime reminder'],
-      });
+      return this.respondWithContext(intent, context,
+        "How was your sleep? I can help track your sleep patterns.", {
+          suggestions: ['Log last night\'s sleep', 'Sleep trend', 'Set bedtime reminder'],
+        });
+    }
+
+    // Generic fallback — acknowledge cross-agent context
+    const crossNote = this.getCrossAgentContext(intent, context);
+    if (crossNote) {
+      return this.respond(
+        `${crossNote}\n\nAs your Fitness & Health Coach, I can track workouts, nutrition, vitals, and medications. What would you like to do?`, {
+          suggestions: ['Log workout', 'Log food', 'Log weight', 'My health summary'],
+        });
     }
 
     return this.respond("I'm your health & fitness coach! I can track workouts, nutrition, vitals, and medications.", {

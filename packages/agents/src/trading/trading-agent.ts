@@ -27,16 +27,27 @@ export class TradingAgent extends BaseAgent {
 
   async handleMessage(message: Message, context: AgentContext): Promise<AgentResponse> {
     const content = message.content.toLowerCase();
+    const intent = this.analyzeIntent(message, context);
 
     if (content.includes('portfolio') || content.includes('holding')) {
-      return this.respond("Let me pull up your portfolio. Here's your current allocation and P&L.", {
-        suggestions: ['Detailed breakdown', 'Sector allocation', 'Rebalance suggestions'],
-      });
+      return this.respondWithContext(intent, context,
+        "Let me pull up your portfolio. Here's your current allocation and P&L.", {
+          suggestions: ['Detailed breakdown', 'Sector allocation', 'Rebalance suggestions'],
+        });
     }
     if (content.includes('stock') || content.includes('share') || content.includes('market')) {
-      return this.respond("What stock or market are you interested in?", {
-        suggestions: ['My watchlist', 'Market overview', 'Top gainers today', 'Search stock'],
-      });
+      return this.respondWithContext(intent, context,
+        "What stock or market are you interested in?", {
+          suggestions: ['My watchlist', 'Market overview', 'Top gainers today', 'Search stock'],
+        });
+    }
+
+    const crossNote = this.getCrossAgentContext(intent, context);
+    if (crossNote) {
+      return this.respond(
+        `${crossNote}\n\nI track your investments — stocks, mutual funds, crypto, and SIPs. What would you like to know?`, {
+          suggestions: ['My portfolio', 'Market overview', 'SIP status', 'Add investment'],
+        });
     }
 
     return this.respond("I track your investments — stocks, mutual funds, crypto, and SIPs.", {
