@@ -1,6 +1,8 @@
+import Anthropic from '@anthropic-ai/sdk';
+
 /**
  * AIEngine abstracts the AI/LLM layer.
- * Supports multiple providers and local models for privacy.
+ * Supports Claude API with automatic fallback.
  */
 export interface AIConfig {
   provider: 'claude' | 'local';
@@ -18,21 +20,13 @@ export interface EmbeddingResult {
  * Parsed user intent from a natural language message.
  */
 export interface UserIntent {
-  /** The primary action the user wants (e.g., 'view', 'add', 'check', 'search', 'compare') */
   primaryAction: string;
-  /** The main topic/entity (e.g., 'emi', 'expense', 'email', 'workout') */
   primaryTopic: string;
-  /** Secondary topics or data sources mentioned (e.g., user says "check mails for EMIs" → dataSources: ['email']) */
   dataSources: string[];
-  /** Other agent domains referenced in the message (e.g., 'email', 'finance', 'fitness') */
   crossAgentRefs: string[];
-  /** The full list of sub-requests if the message is compound */
   subRequests: Array<{ action: string; topic: string; agentDomain?: string }>;
-  /** Sentiment/urgency: 'casual', 'urgent', 'frustrated' */
   tone: 'casual' | 'urgent' | 'frustrated';
-  /** Original message for reference */
   originalMessage: string;
-  /** Confidence score 0-1 */
   confidence: number;
 }
 
@@ -41,7 +35,7 @@ const DOMAIN_KEYWORDS: Record<string, string[]> = {
   finance: ['emi', 'loan', 'expense', 'income', 'salary', 'budget', 'spend', 'bank', 'payment', 'money', 'cost', 'balance', 'net worth', 'investment', 'saving', 'credit', 'debit', 'installment', 'mortgage'],
   email: ['mail', 'email', 'inbox', 'unread', 'newsletter', 'subscribe', 'gmail', 'outlook'],
   fitness: ['workout', 'exercise', 'gym', 'calorie', 'weight', 'sleep', 'step', 'run', 'health', 'diet', 'bmi', 'yoga', 'cardio'],
-  shopping: ['buy', 'shop', 'price', 'deal', 'compare', 'grocery', 'list', 'cart', 'order', 'amazon', 'flipkart'],
+  shopping: ['buy', 'shop', 'price', 'deal', 'compare', 'grocery', 'list', 'cart', 'order', 'amazon', 'flipkart', 'discount', 'cheap', 'best place', 'where to buy'],
   trading: ['stock', 'share', 'portfolio', 'market', 'trade', 'nifty', 'sensex', 'mutual fund', 'crypto'],
   property: ['rent', 'tenant', 'property', 'house', 'apartment', 'lease', 'real estate', 'maintenance'],
   tax: ['tax', 'itr', 'deduction', '80c', 'gst', 'filing', 'return'],
@@ -52,7 +46,6 @@ const DOMAIN_KEYWORDS: Record<string, string[]> = {
   utility: ['bill', 'electricity', 'water', 'gas', 'recharge', 'dth', 'broadband'],
 };
 
-// Action verbs mapping
 const ACTION_VERBS: Record<string, string[]> = {
   view: ['show', 'see', 'view', 'list', 'display', 'get', 'find', 'what', 'how much', 'how many', 'tell'],
   add: ['add', 'create', 'new', 'record', 'log', 'save', 'enter', 'set up', 'register'],
@@ -65,18 +58,74 @@ const ACTION_VERBS: Record<string, string[]> = {
 
 export class AIEngine {
   private config: AIConfig;
+  private client: Anthropic | null = null;
 
   constructor(config: AIConfig) {
     this.config = config;
+    // Initialize Claude client if API key available
+    const apiKey = config.apiKey || process.env.ANTHROPIC_API_KEY;
+    if (apiKey && config.provider === 'claude') {
+      this.client = new Anthropic({ apiKey });
+    }
   }
 
   /**
-   * Simple text completion.
+   * Check if AI is available (Claude API key configured).
+   */
+  get isAvailable(): boolean {
+    return this.client !== null;
+  }
+
+  /**
+   * Text completion using Claude API.
    */
   async complete(prompt: string, options?: { maxTokens?: number; temperature?: number }): Promise<string> {
-    // In production: calls Claude API or local model
-    // For architecture scaffold, returns placeholder
-    return `[AI Response to: ${prompt.slice(0, 50)}...]`;
+    if (!this.client) {
+      return `[AI not configured — set ANTHROPIC_API_KEY]`;
+    }
+
+    try {
+      const response = await this.client.messages.create({
+        model: this.config.model,
+        max_tokens: options?.maxTokens ?? this.config.maxTokens ?? 1024,
+        messages: [{ role: 'user', content: prompt }],
+      });
+
+      const textBlock = response.content.find(b => b.type === 'text');
+      return textBlock?.text ?? '';
+    } catch (error) {
+      console.error('AIEngine.complete error:', error);
+      return `[AI error — please try again]`;
+    }
+  }
+
+  /**
+   * Chat-style completion with a system prompt and user message.
+   * This is the primary method agents use for generating smart responses.
+   */
+  async chat(
+    systemPrompt: string,
+    userMessage: string,
+    options?: { maxTokens?: number; temperature?: number }
+  ): Promise<string> {
+    if (!this.client) {
+      return '';
+    }
+
+    try {
+      const response = await this.client.messages.create({
+        model: this.config.model,
+        max_tokens: options?.maxTokens ?? this.config.maxTokens ?? 1024,
+        system: systemPrompt,
+        messages: [{ role: 'user', content: userMessage }],
+      });
+
+      const textBlock = response.content.find(b => b.type === 'text');
+      return textBlock?.text ?? '';
+    } catch (error) {
+      console.error('AIEngine.chat error:', error);
+      return '';
+    }
   }
 
   /**
@@ -101,21 +150,18 @@ export class AIEngine {
    * Classify text into categories.
    */
   async classify(text: string, categories: string[]): Promise<{ category: string; confidence: number }> {
-    const prompt = `Classify this text into one of these categories: ${categories.join(', ')}\n\nText: "${text}"\n\nCategory:`;
+    const prompt = `Classify this text into one of these categories: ${categories.join(', ')}\n\nText: "${text}"\n\nRespond with ONLY the category name, nothing else.`;
     const result = await this.complete(prompt);
     return { category: result.trim(), confidence: 0.85 };
   }
 
   /**
    * Analyze a user message and extract structured intent.
-   * Uses heuristic NLP (in production, this would use the LLM).
    */
   analyzeIntent(message: string): UserIntent {
     const lower = message.toLowerCase();
-    const words = lower.split(/\s+/);
 
-    // Detect action
-    let primaryAction = 'view'; // default
+    let primaryAction = 'view';
     for (const [action, verbs] of Object.entries(ACTION_VERBS)) {
       if (verbs.some(v => lower.includes(v))) {
         primaryAction = action;
@@ -123,7 +169,6 @@ export class AIEngine {
       }
     }
 
-    // Detect all domains referenced
     const detectedDomains: Array<{ domain: string; score: number }> = [];
     for (const [domain, keywords] of Object.entries(DOMAIN_KEYWORDS)) {
       const matchCount = keywords.filter(kw => lower.includes(kw)).length;
@@ -136,21 +181,13 @@ export class AIEngine {
     const primaryDomain = detectedDomains[0]?.domain || 'general';
     const primaryTopic = this.extractPrimaryTopic(lower, primaryDomain);
 
-    // Detect cross-agent references (domains other than primary)
     const crossAgentRefs = detectedDomains
       .filter(d => d.domain !== primaryDomain)
       .map(d => d.domain);
 
-    // Detect data sources mentioned (e.g., "check my mails" → email is a data source)
-    const dataSources = this.extractDataSources(lower, primaryDomain);
-
-    // Parse compound requests ("check mails AND find EMIs")
+    const dataSources = this.extractDataSources(lower);
     const subRequests = this.parseSubRequests(lower);
-
-    // Detect tone
     const tone = this.detectTone(lower);
-
-    // Confidence based on how clear the intent is
     const confidence = detectedDomains.length > 0 ? Math.min(0.95, 0.5 + detectedDomains[0].score * 0.15) : 0.3;
 
     return {
@@ -167,23 +204,20 @@ export class AIEngine {
 
   private extractPrimaryTopic(lower: string, domain: string): string {
     const keywords = DOMAIN_KEYWORDS[domain] || [];
-    // Return the first matching keyword as the primary topic
     for (const kw of keywords) {
       if (lower.includes(kw)) return kw;
     }
     return domain;
   }
 
-  private extractDataSources(lower: string, primaryDomain: string): string[] {
+  private extractDataSources(lower: string): string[] {
     const sources: string[] = [];
-    // Check if user mentions data sources from other domains
     const sourcePatterns: Record<string, string[]> = {
       email: ['mail', 'email', 'inbox', 'gmail'],
       bank: ['bank', 'account', 'statement', 'transaction'],
       calendar: ['calendar', 'schedule', 'event'],
       sms: ['sms', 'text message', 'otp'],
     };
-
     for (const [source, patterns] of Object.entries(sourcePatterns)) {
       if (patterns.some(p => lower.includes(p))) {
         sources.push(source);
@@ -193,46 +227,28 @@ export class AIEngine {
   }
 
   private parseSubRequests(lower: string): Array<{ action: string; topic: string; agentDomain?: string }> {
-    // Split on conjunctions to find compound requests
     const parts = lower.split(/\b(?:and|then|also|plus|after that)\b/).map(p => p.trim()).filter(Boolean);
-
-    if (parts.length <= 1) {
-      // Single request — still parse it
-      return [this.parseSingleRequest(lower)];
-    }
-
+    if (parts.length <= 1) return [this.parseSingleRequest(lower)];
     return parts.map(part => this.parseSingleRequest(part));
   }
 
   private parseSingleRequest(text: string): { action: string; topic: string; agentDomain?: string } {
     let action = 'view';
     for (const [act, verbs] of Object.entries(ACTION_VERBS)) {
-      if (verbs.some(v => text.includes(v))) {
-        action = act;
-        break;
-      }
+      if (verbs.some(v => text.includes(v))) { action = act; break; }
     }
-
     let topic = 'general';
     let agentDomain: string | undefined;
     for (const [domain, keywords] of Object.entries(DOMAIN_KEYWORDS)) {
       const matched = keywords.find(kw => text.includes(kw));
-      if (matched) {
-        topic = matched;
-        agentDomain = domain;
-        break;
-      }
+      if (matched) { topic = matched; agentDomain = domain; break; }
     }
-
     return { action, topic, agentDomain };
   }
 
   private detectTone(lower: string): 'casual' | 'urgent' | 'frustrated' {
-    const urgentWords = ['urgent', 'asap', 'immediately', 'right now', 'hurry', 'critical'];
-    const frustratedWords = ['not working', 'broken', 'wrong', 'again', 'still', 'why', 'annoying', 'frustrating'];
-
-    if (urgentWords.some(w => lower.includes(w))) return 'urgent';
-    if (frustratedWords.some(w => lower.includes(w))) return 'frustrated';
+    if (['urgent', 'asap', 'immediately', 'right now', 'hurry', 'critical'].some(w => lower.includes(w))) return 'urgent';
+    if (['not working', 'broken', 'wrong', 'again', 'still', 'why', 'annoying'].some(w => lower.includes(w))) return 'frustrated';
     return 'casual';
   }
 }

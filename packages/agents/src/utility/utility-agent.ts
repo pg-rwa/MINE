@@ -27,6 +27,13 @@ export class UtilityAgent extends BaseAgent {
   async handleMessage(message: Message, context: AgentContext): Promise<AgentResponse> {
     const content = message.content.toLowerCase();
 
+    // Try AI first for contextual responses
+    const vaultData = this.getVaultDataSummary(context, ['bills']);
+    const aiResponse = await this.generateAIResponse(message, context, vaultData || undefined);
+    if (aiResponse) {
+      return this.respond(aiResponse, { suggestions: ['Upcoming bills', 'Pay a bill', 'Usage analysis', 'Set reminders'] });
+    }
+
     if (content.includes('electricity') || content.includes('power')) {
       return this.respond("I'll check your electricity bill status. Would you like to view or pay?", {
         suggestions: ['View current bill', 'Pay now', 'Usage history', 'Compare months'],

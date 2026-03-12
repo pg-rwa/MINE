@@ -27,6 +27,12 @@ export class ChatAgent extends BaseAgent {
   async handleMessage(message: Message, context: AgentContext): Promise<AgentResponse> {
     const content = message.content.toLowerCase();
 
+    // Try AI first for contextual responses
+    const aiResponse = await this.generateAIResponse(message, context);
+    if (aiResponse) {
+      return this.respond(aiResponse, { suggestions: ['Unread messages', 'Send a message', 'Scheduled messages'] });
+    }
+
     if (content.includes('unread') || content.includes('messages')) {
       return this.respond("Here's a summary of your unread messages across platforms.", {
         suggestions: ['WhatsApp', 'Telegram', 'Slack', 'All platforms'],

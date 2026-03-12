@@ -27,6 +27,13 @@ export class CookingAgent extends BaseAgent {
   async handleMessage(message: Message, context: AgentContext): Promise<AgentResponse> {
     const content = message.content.toLowerCase();
 
+    // Try AI first for contextual responses
+    const vaultData = this.getVaultDataSummary(context, ['recipes', 'meal_plans']);
+    const aiResponse = await this.generateAIResponse(message, context, vaultData || undefined);
+    if (aiResponse) {
+      return this.respond(aiResponse, { suggestions: ['What to cook today', 'Plan this week', 'Generate grocery list', 'My saved recipes'] });
+    }
+
     if (content.includes('recipe') || content.includes('cook') || content.includes('make')) {
       return this.respond("What are you in the mood for? I can suggest recipes based on cuisine, ingredients, or dietary preferences.", {
         suggestions: ['Quick meals (<30 min)', 'What can I make with...', 'Healthy options', 'Browse cuisines'],

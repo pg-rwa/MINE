@@ -27,6 +27,12 @@ export class SearchAgent extends BaseAgent {
   async handleMessage(message: Message, context: AgentContext): Promise<AgentResponse> {
     const intent = this.analyzeIntent(message, context);
 
+    // Try AI first for contextual responses
+    const aiResponse = await this.generateAIResponse(message, context);
+    if (aiResponse) {
+      return this.respond(aiResponse, { suggestions: ['Search my data only', 'Search web only', 'Search documents', 'Search contacts'] });
+    }
+
     // If the query relates to a specific agent domain, suggest that agent
     if (intent.crossAgentRefs.length > 0 || intent.subRequests.some(sr => sr.agentDomain)) {
       const domains = intent.crossAgentRefs.length > 0

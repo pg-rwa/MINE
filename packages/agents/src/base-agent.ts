@@ -7,6 +7,7 @@ import {
   SystemEvent,
   Insight,
   UserIntent,
+  DataCategory,
 } from '@mine/core';
 
 /**
@@ -44,32 +45,86 @@ export abstract class BaseAgent implements IAgent {
     return [];
   }
 
-  // ─── Intent Analysis ────────────────────────────────
+  // ─── AI-Powered Response Generation ─────────────────
 
   /**
-   * Analyze the user's message to understand what they actually want.
+   * Generate a smart AI response for the user's message.
+   * Uses Claude API when available, with domain-specific system prompt.
+   *
+   * @param message - The user's message
+   * @param context - Agent context with AI engine
+   * @param extraContext - Additional context to include (e.g., user's data from vault)
+   * @returns AI-generated response text, or empty string if AI unavailable
    */
+  protected async generateAIResponse(
+    message: Message,
+    context: AgentContext,
+    extraContext?: string
+  ): Promise<string> {
+    if (!context.aiEngine.isAvailable) return '';
+
+    const systemPrompt = this.buildSystemPrompt(context, extraContext);
+
+    return context.aiEngine.chat(systemPrompt, message.content, {
+      maxTokens: 512,
+    });
+  }
+
+  /**
+   * Build the system prompt for this agent, including its role, capabilities,
+   * and any user data context.
+   */
+  protected buildSystemPrompt(context: AgentContext, extraContext?: string): string {
+    const capabilities = this.manifest.capabilities
+      .map(c => `- ${c.name}: ${c.description}`)
+      .join('\n');
+
+    const activeAgents = context.listActiveAgents()
+      .filter(a => a.id !== this.manifest.id)
+      .map(a => `- ${a.name}: ${a.description}`)
+      .join('\n');
+
+    let prompt = `You are "${this.manifest.name}", an AI agent inside MINE (My Intelligent Network of Everything), a personal assistant super app.
+
+Your role: ${this.manifest.description}
+
+Your capabilities:
+${capabilities}
+
+Guidelines:
+- Be concise but helpful. Keep responses under 150 words.
+- Directly address what the user is asking. Don't give generic introductions.
+- If the user asks something outside your domain, acknowledge it and suggest which other agent can help.
+- Use markdown formatting sparingly (bold for key info, numbered lists for data).
+- Be conversational and friendly, not robotic.
+- If you can take action (like tracking a price, logging an expense, etc.), tell the user you're doing it.
+- Never say "I'm just an AI" or "I can't actually do that" — you ARE the agent, act like it.`;
+
+    if (activeAgents) {
+      prompt += `\n\nOther active agents the user has installed:\n${activeAgents}\nYou can suggest these agents when queries fall outside your domain.`;
+    }
+
+    if (extraContext) {
+      prompt += `\n\nUser's data context:\n${extraContext}`;
+    }
+
+    return prompt;
+  }
+
+  // ─── Intent Analysis ────────────────────────────────
+
   protected analyzeIntent(message: Message, context: AgentContext): UserIntent {
     return context.aiEngine.analyzeIntent(message.content);
   }
 
-  /**
-   * Check if the user's message references capabilities outside this agent's domain.
-   * Returns a contextual prefix acknowledging cross-agent needs.
-   */
   protected getCrossAgentContext(intent: UserIntent, context: AgentContext): string | null {
-    if (intent.crossAgentRefs.length === 0 && intent.dataSources.length === 0) {
-      return null;
-    }
+    if (intent.crossAgentRefs.length === 0 && intent.dataSources.length === 0) return null;
 
     const activeAgents = context.listActiveAgents();
     const parts: string[] = [];
 
-    // Check data sources the user mentioned
     for (const source of intent.dataSources) {
-      const sourceAgent = activeAgents.find(a =>
-        a.id === source || a.description.toLowerCase().includes(source)
-      );
+      const sourceAgent = activeAgents.find(a => a.id === source || a.description.toLowerCase().includes(source));
       if (sourceAgent && sourceAgent.id !== this.manifest.id) {
         parts.push(`I'll coordinate with **${sourceAgent.name}** to ${source === 'email' ? 'scan your emails' : `check your ${source} data`}.`);
       } else if (!sourceAgent) {
@@ -78,9 +133,8 @@ export abstract class BaseAgent implements IAgent {
       }
     }
 
-    // Check cross-agent domain references
     for (const ref of intent.crossAgentRefs) {
-      if (intent.dataSources.includes(ref)) continue; // already handled
+      if (intent.dataSources.includes(ref)) continue;
       const refAgent = activeAgents.find(a => a.id === ref);
       if (refAgent && refAgent.id !== this.manifest.id) {
         parts.push(`For ${ref}-related queries, **${refAgent.name}** can also help.`);
@@ -90,10 +144,6 @@ export abstract class BaseAgent implements IAgent {
     return parts.length > 0 ? parts.join(' ') : null;
   }
 
-  /**
-   * Build a response that acknowledges the full context of the user's message,
-   * including any cross-agent needs, before providing the actual answer.
-   */
   protected respondWithContext(
     intent: UserIntent,
     context: AgentContext,
@@ -101,7 +151,6 @@ export abstract class BaseAgent implements IAgent {
     options?: Partial<Omit<AgentResponse, 'agentId' | 'timestamp'>>
   ): AgentResponse {
     const crossAgentNote = this.getCrossAgentContext(intent, context);
-    const suggestions = options?.suggestions ?? [];
 
     let content = mainContent;
     if (crossAgentNote) {
@@ -112,7 +161,7 @@ export abstract class BaseAgent implements IAgent {
       agentId: this.manifest.id,
       content,
       actions: options?.actions ?? [],
-      suggestions,
+      suggestions: options?.suggestions ?? [],
       timestamp: new Date(),
     };
   }
@@ -145,5 +194,23 @@ export abstract class BaseAgent implements IAgent {
       action,
       createdAt: new Date(),
     };
+  }
+
+  /**
+   * Helper to get user data from vault as a formatted string for AI context.
+   */
+  protected getVaultDataSummary(context: AgentContext, categories: DataCategory[]): string {
+    const parts: string[] = [];
+    for (const category of categories) {
+      try {
+        const entries = context.vault.getForAgent(context.userId, context.agentId, category);
+        if (entries.length > 0) {
+          parts.push(`${category} (${entries.length} entries): ${JSON.stringify(entries.map(e => e.data).slice(0, 5))}`);
+        }
+      } catch {
+        // No permission for this category
+      }
+    }
+    return parts.join('\n');
   }
 }

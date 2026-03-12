@@ -42,7 +42,7 @@ async function main() {
   }
 
   // ─── Initialize Agent System ───────────────────────
-  const runtime = new AgentRuntime(permissions, vault, auditLog);
+  const runtime = new AgentRuntime(permissions, vault, auditLog, aiEngine);
   const registry = new AgentRegistry();
   const router = new MessageRouter(runtime, aiEngine);
 
@@ -70,6 +70,7 @@ async function main() {
   await app.listen({ port, host });
   console.log(`MINE API running at http://${host}:${port}`);
   console.log(`Registered ${registry.listAvailable().length} agents`);
+  console.log(`AI Engine: ${aiEngine.isAvailable ? 'Connected (Claude API)' : 'Not configured — set ANTHROPIC_API_KEY for smart responses'}`);
 }
 
 main().catch((err) => {

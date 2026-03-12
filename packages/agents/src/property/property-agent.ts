@@ -43,6 +43,13 @@ export class PropertyAgent extends BaseAgent {
       return this.handleAddTenant(context);
     }
 
+    // Try AI first for contextual responses
+    const vaultData = this.getVaultDataSummary(context, ['properties', 'tenants', 'rent_records']);
+    const aiResponse = await this.generateAIResponse(message, context, vaultData || undefined);
+    if (aiResponse) {
+      return this.respond(aiResponse, { suggestions: ['My properties', 'Add a property', 'Add a tenant', 'Rent status'] });
+    }
+
     // VIEW flows
     if (content.includes('rent')) {
       return this.handleViewRent(context);

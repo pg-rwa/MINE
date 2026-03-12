@@ -39,6 +39,12 @@ export class AdHocAgent extends BaseAgent {
   async handleMessage(message: Message, context: AgentContext): Promise<AgentResponse> {
     const content = message.content.toLowerCase();
 
+    // Try AI first for contextual responses
+    const aiResponse = await this.generateAIResponse(message, context);
+    if (aiResponse) {
+      return this.respond(aiResponse, { suggestions: ['Create a custom agent', 'Show my custom agents', 'Show examples'] });
+    }
+
     if (content.includes('create') || content.includes('make') || content.includes('build')) {
       return this.handleCreate(message, context);
     }

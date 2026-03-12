@@ -27,6 +27,12 @@ export class SocialAgent extends BaseAgent {
   async handleMessage(message: Message, context: AgentContext): Promise<AgentResponse> {
     const content = message.content.toLowerCase();
 
+    // Try AI first for contextual responses
+    const aiResponse = await this.generateAIResponse(message, context);
+    if (aiResponse) {
+      return this.respond(aiResponse, { suggestions: ['Create a post', 'View analytics', 'Content ideas', 'Schedule queue'] });
+    }
+
     if (content.includes('post') || content.includes('publish') || content.includes('tweet')) {
       return this.respond("I'll help you create a post. Which platforms? And what's the topic?", {
         suggestions: ['Twitter/X', 'LinkedIn', 'Instagram', 'All platforms'],

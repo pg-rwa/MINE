@@ -30,6 +30,13 @@ export class FitnessAgent extends BaseAgent {
     const content = message.content.toLowerCase();
     const intent = this.analyzeIntent(message, context);
 
+    // Try AI first for contextual responses
+    const vaultData = this.getVaultDataSummary(context, ['health_metrics', 'workouts', 'nutrition']);
+    const aiResponse = await this.generateAIResponse(message, context, vaultData || undefined);
+    if (aiResponse) {
+      return this.respond(aiResponse, { suggestions: ['Log workout', 'Log food', 'Log weight', 'My health summary'] });
+    }
+
     if (content.includes('workout') || content.includes('exercise') || content.includes('gym')) {
       return this.respondWithContext(intent, context,
         "Let's log your workout! What did you do today?", {

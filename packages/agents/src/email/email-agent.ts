@@ -29,6 +29,12 @@ export class EmailAgent extends BaseAgent {
     const content = message.content.toLowerCase();
     const intent = this.analyzeIntent(message, context);
 
+    // Try AI first for contextual responses
+    const aiResponse = await this.generateAIResponse(message, context);
+    if (aiResponse) {
+      return this.respond(aiResponse, { suggestions: ['Summarize inbox', 'Find specific emails', 'Draft an email', 'Cleanup subscriptions'] });
+    }
+
     // User wants to find specific types of emails (e.g., "find EMI-related mails")
     if (intent.crossAgentRefs.length > 0 || this.isTopicSearch(content)) {
       return this.handleTopicSearch(message, context, intent);

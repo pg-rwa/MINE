@@ -26,6 +26,13 @@ export class DeliveryAgent extends BaseAgent {
   async handleMessage(message: Message, context: AgentContext): Promise<AgentResponse> {
     const content = message.content.toLowerCase();
 
+    // Try AI first for contextual responses
+    const vaultData = this.getVaultDataSummary(context, ['deliveries', 'orders']);
+    const aiResponse = await this.generateAIResponse(message, context, vaultData || undefined);
+    if (aiResponse) {
+      return this.respond(aiResponse, { suggestions: ['Active deliveries', 'Arriving today', 'Order history', 'Initiate return'] });
+    }
+
     if (content.includes('where') || content.includes('track') || content.includes('status')) {
       return this.respond("Let me check the status of your orders. Which delivery are you looking for?", {
         suggestions: ['All active orders', 'Latest order', 'Arriving today'],

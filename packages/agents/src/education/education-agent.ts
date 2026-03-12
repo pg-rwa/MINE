@@ -27,6 +27,13 @@ export class EducationAgent extends BaseAgent {
   async handleMessage(message: Message, context: AgentContext): Promise<AgentResponse> {
     const content = message.content.toLowerCase();
 
+    // Try AI first for contextual responses
+    const vaultData = this.getVaultDataSummary(context, ['courses', 'study_plans']);
+    const aiResponse = await this.generateAIResponse(message, context, vaultData || undefined);
+    if (aiResponse) {
+      return this.respond(aiResponse, { suggestions: ['Start learning something', 'Continue where I left off', 'Quiz me', 'My progress'] });
+    }
+
     if (content.includes('learn') || content.includes('study') || content.includes('course')) {
       return this.respond("What would you like to learn? I can create a structured study plan.", {
         suggestions: ['Programming', 'Language', 'Finance basics', 'Custom topic'],

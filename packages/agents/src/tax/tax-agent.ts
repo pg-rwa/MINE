@@ -28,6 +28,13 @@ export class TaxAgent extends BaseAgent {
   async handleMessage(message: Message, context: AgentContext): Promise<AgentResponse> {
     const content = message.content.toLowerCase();
 
+    // Try AI first for contextual responses
+    const vaultData = this.getVaultDataSummary(context, ['tax_records', 'income']);
+    const aiResponse = await this.generateAIResponse(message, context, vaultData || undefined);
+    if (aiResponse) {
+      return this.respond(aiResponse, { suggestions: ['Estimate my tax', 'Tax saving options', 'Upload tax document', 'Filing checklist'] });
+    }
+
     if (content.includes('estimate') || content.includes('how much tax')) {
       return this.respond("I'll calculate your estimated tax. I'll need your income details and deductions. Let me check what I have.", {
         suggestions: ['Use last year\'s data', 'Enter new income', 'Update deductions'],

@@ -31,46 +31,38 @@ export class FinanceAgent extends BaseAgent {
   async handleMessage(message: Message, context: AgentContext): Promise<AgentResponse> {
     const content = message.content.toLowerCase();
 
-    // ─── Form submissions (from inline forms) — must be first ───
+    // Form submissions — must be first
     if (message.content.trimStart().startsWith('{') || content.startsWith('save:')) {
       return this.handleFormSubmit(message, context);
     }
 
-    // Analyze the user's actual intent
+    // ADD flows need structured forms, not AI
+    if (content.includes('add') && (content.includes('emi') || content.includes('loan'))) return this.handleAddEMI(message, context);
+    if (content.includes('add') && (content.includes('expense') || content.includes('spent'))) return this.handleAddExpense(message, context);
+    if (content.includes('add') && (content.includes('income') || content.includes('salary'))) return this.handleAddIncome(message, context);
+
+    // For everything else — use AI with user's financial data as context
+    const vaultData = this.getVaultDataSummary(context, ['emis', 'expenses', 'income']);
+    const aiResponse = await this.generateAIResponse(message, context, vaultData || undefined);
+    if (aiResponse) {
+      return this.respond(aiResponse, { suggestions: this.getSuggestionsFor(content) });
+    }
+
+    // Fallback when AI unavailable — use pattern matching
     const intent = this.analyzeIntent(message, context);
-
-    // ─── ADD flows (data collection) ────────────────
-    if (intent.primaryAction === 'add' || (content.includes('add') && this.isFinanceTopic(content))) {
-      if (content.includes('emi') || content.includes('loan')) {
-        return this.handleAddEMI(message, context);
-      }
-      if (content.includes('expense') || content.includes('spent')) {
-        return this.handleAddExpense(message, context);
-      }
-      if (content.includes('income') || content.includes('salary')) {
-        return this.handleAddIncome(message, context);
-      }
-    }
-
-    // ─── VIEW / CHECK flows — now context-aware ─────
-    if (content.includes('expense') || content.includes('spent') || content.includes('spending')) {
-      return this.handleViewExpenses(message, context, intent);
-    }
-    if (content.includes('emi') || content.includes('loan') || content.includes('installment')) {
-      return this.handleViewEMIs(message, context, intent);
-    }
-    if (content.includes('income') || content.includes('salary')) {
-      return this.handleViewIncome(message, context, intent);
-    }
-    if (content.includes('balance') || content.includes('net worth') || content.includes('summary')) {
-      return this.handleSummary(message, context, intent);
-    }
-    if (content.includes('budget')) {
-      return this.handleBudget(message, context);
-    }
-
-    // ─── Fallback — use intent to give a more helpful response ───
+    if (content.includes('expense') || content.includes('spent') || content.includes('spending')) return this.handleViewExpenses(message, context, intent);
+    if (content.includes('emi') || content.includes('loan') || content.includes('installment')) return this.handleViewEMIs(message, context, intent);
+    if (content.includes('income') || content.includes('salary')) return this.handleViewIncome(message, context, intent);
+    if (content.includes('balance') || content.includes('net worth') || content.includes('summary')) return this.handleSummary(message, context, intent);
+    if (content.includes('budget')) return this.handleBudget(message, context);
     return this.handleGenericFinanceQuery(message, context, intent);
+  }
+
+  private getSuggestionsFor(content: string): string[] {
+    if (content.includes('emi') || content.includes('loan')) return ['Add another EMI', 'Monthly summary', 'Show expenses'];
+    if (content.includes('expense') || content.includes('spent')) return ['Add an expense', 'Show EMIs', 'Monthly summary'];
+    if (content.includes('income') || content.includes('salary')) return ['Add income', 'Show expenses', 'Monthly summary'];
+    return ['Show my EMIs', 'Add an expense', 'Monthly summary', 'Add income'];
   }
 
   async getInsights(context: AgentContext): Promise<Insight[]> {
@@ -94,11 +86,6 @@ export class FinanceAgent extends BaseAgent {
       }
     } catch { /* no permission yet */ }
     return insights;
-  }
-
-  private isFinanceTopic(content: string): boolean {
-    const topics = ['emi', 'loan', 'expense', 'income', 'salary', 'budget', 'spent'];
-    return topics.some(t => content.includes(t));
   }
 
   // ─── ADD Handlers ──────────────────────────────────

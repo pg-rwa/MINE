@@ -29,6 +29,13 @@ export class TradingAgent extends BaseAgent {
     const content = message.content.toLowerCase();
     const intent = this.analyzeIntent(message, context);
 
+    // Try AI first for contextual responses
+    const vaultData = this.getVaultDataSummary(context, ['investments']);
+    const aiResponse = await this.generateAIResponse(message, context, vaultData || undefined);
+    if (aiResponse) {
+      return this.respond(aiResponse, { suggestions: ['My portfolio', 'Market overview', 'SIP status', 'Add investment'] });
+    }
+
     if (content.includes('portfolio') || content.includes('holding')) {
       return this.respondWithContext(intent, context,
         "Let me pull up your portfolio. Here's your current allocation and P&L.", {

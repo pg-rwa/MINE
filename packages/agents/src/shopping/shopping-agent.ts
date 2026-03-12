@@ -26,32 +26,20 @@ export class ShoppingAgent extends BaseAgent {
   };
 
   async handleMessage(message: Message, context: AgentContext): Promise<AgentResponse> {
+    const vaultData = this.getVaultDataSummary(context, ['shopping_lists', 'orders']);
+    const aiResponse = await this.generateAIResponse(message, context, vaultData || undefined);
+    if (aiResponse) {
+      return this.respond(aiResponse, { suggestions: ['Track a price', 'My shopping lists', 'Recent price drops', 'Wishlist'] });
+    }
+
     const content = message.content.toLowerCase();
-    const intent = this.analyzeIntent(message, context);
-
     if (content.includes('list') || content.includes('grocery')) {
-      return this.respondWithContext(intent, context,
-        "I'll manage your shopping list. What do you need to add?", {
-          suggestions: ['View current list', 'New list', 'Share list'],
-        });
+      return this.respond("I'll manage your shopping list. What do you need to add?", { suggestions: ['View current list', 'New list', 'Share list'] });
     }
-    if (content.includes('price') || content.includes('deal') || content.includes('compare')) {
-      return this.respondWithContext(intent, context,
-        "I can track prices and find deals. What product are you looking for?", {
-          suggestions: ['My price alerts', 'Search deals', 'Compare products'],
-        });
+    if (content.includes('price') || content.includes('deal') || content.includes('compare') || content.includes('discount')) {
+      return this.respond("I can track prices and find deals. What product are you looking for?", { suggestions: ['My price alerts', 'Search deals', 'Compare products'] });
     }
-
-    // Acknowledge cross-agent context in fallback
-    const crossNote = this.getCrossAgentContext(intent, context);
-    if (crossNote) {
-      return this.respond(
-        `${crossNote}\n\nAs your Shopping Assistant, I help with shopping lists, price tracking, and finding the best deals.`, {
-          suggestions: ['My shopping lists', 'Track a price', 'Recent price drops', 'Wishlist'],
-        });
-    }
-
-    return this.respond("I help with shopping lists, price tracking, and finding the best deals.", {
+    return this.respond("I help with shopping lists, price tracking, and finding the best deals. What are you looking for?", {
       suggestions: ['My shopping lists', 'Track a price', 'Recent price drops', 'Wishlist'],
     });
   }
