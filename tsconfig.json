@@ -11,7 +11,7 @@
     "declaration": true,
     "sourceMap": true,
     "outDir": "dist",
-    "rootDir": "src",
+    "rootDir": ".",
     "jsx": "react-jsx",
     "paths": {
       "@mine/core": ["./packages/core/src"],
