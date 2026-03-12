@@ -71,7 +71,7 @@ export class PermissionEngine extends EventEmitter<PermissionEvents> {
       resource: request.resource,
       level: request.level,
       actions: request.actions,
-      scope: request.scope,
+      scope: request.scope ?? {},
       grantedAt: now,
       expiresAt: expiresAt ?? undefined,
       autoRenew: false,

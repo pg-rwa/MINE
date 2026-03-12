@@ -36,7 +36,7 @@ export const PermissionRequestSchema = z.object({
   duration: z.enum(['session', '24h', '7d', '30d', '90d', '1y', 'permanent']).default('30d'),
 });
 
-export type PermissionRequest = z.infer<typeof PermissionRequestSchema>;
+export type PermissionRequest = z.input<typeof PermissionRequestSchema>;
 
 export interface PermissionCheck {
   granted: boolean;

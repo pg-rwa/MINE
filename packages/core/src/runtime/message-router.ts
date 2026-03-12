@@ -49,10 +49,10 @@ export class MessageRouter {
   /**
    * Use AI to determine which agent should handle a message.
    */
-  private async resolveAgent(message: Message): Promise<string | null> {
+  private async resolveAgent(message: Message): Promise<string | undefined> {
     const activeAgents = this.runtime.listAgents().filter((a) => a.active);
 
-    if (activeAgents.length === 0) return null;
+    if (activeAgents.length === 0) return undefined;
 
     const agentDescriptions = activeAgents
       .map((a) => `- ${a.manifest.id}: ${a.manifest.description} [keywords: ${a.manifest.capabilities.flatMap((c) => c.keywords).join(', ')}]`)
@@ -70,10 +70,10 @@ Agent ID:`;
     const result = await this.aiEngine.complete(prompt);
     const agentId = result.trim().toLowerCase().replace(/['"]/g, '');
 
-    if (agentId === 'none') return null;
+    if (agentId === 'none') return undefined;
 
     const exists = activeAgents.some((a) => a.manifest.id === agentId);
-    return exists ? agentId : null;
+    return exists ? agentId : undefined;
   }
 
   private getSuggestions(): string[] {

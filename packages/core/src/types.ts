@@ -66,7 +66,7 @@ export const AgentManifestSchema = z.object({
     .default({ type: 'free' }),
 });
 
-export type AgentManifest = z.infer<typeof AgentManifestSchema>;
+export type AgentManifest = z.input<typeof AgentManifestSchema>;
 
 // ─── Messages ───────────────────────────────────────────
 
