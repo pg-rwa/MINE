@@ -252,6 +252,8 @@ export class IntegrationGateway extends EventEmitter<GatewayEvents> {
    * List user's connections.
    */
   listConnections(userId: string): IntegrationConnection[] {
-    return Array.from(this.connections.values()).filter((c) => c.userId === userId);
+    return Array.from(this.connections.values()).filter(
+      (c) => c.userId === userId && c.status !== 'disconnected'
+    );
   }
 }
