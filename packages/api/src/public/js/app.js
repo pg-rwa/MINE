@@ -4,6 +4,7 @@
 const App = {
   currentView: 'dashboard',
   chatAgentId: null,
+  conversationId: null,
 
   async init() {
     // Set up navigation
@@ -92,6 +93,7 @@ const App = {
 
   async chatWithAgent(agentId) {
     this.chatAgentId = agentId;
+    this.conversationId = null; // Start fresh conversation
     await this.navigate('chat');
     // Activate the right chip
     setTimeout(() => {
@@ -124,6 +126,21 @@ const App = {
     el.classList.add('active');
   },
 
+  async loadConversation(conversationId) {
+    this.conversationId = conversationId;
+    await this.navigate('chat');
+    // Scroll to bottom
+    setTimeout(() => {
+      const el = document.getElementById('chatMessages');
+      if (el) el.scrollTop = el.scrollHeight;
+    }, 50);
+  },
+
+  async newConversation() {
+    this.conversationId = null;
+    await this.navigate('chat');
+  },
+
   async sendChat() {
     const input = document.getElementById('chatInput');
     const text = input.value.trim();
@@ -153,7 +170,12 @@ const App = {
     messages.scrollTop = messages.scrollHeight;
 
     try {
-      const response = await API.sendMessage(text, this.chatAgentId);
+      const response = await API.sendMessage(text, this.chatAgentId, this.conversationId);
+
+      // Track conversationId so subsequent messages go to the same conversation
+      if (response.conversationId) {
+        this.conversationId = response.conversationId;
+      }
 
       // Remove typing indicator
       document.getElementById(typingId)?.remove();

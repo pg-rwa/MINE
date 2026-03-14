@@ -31,8 +31,16 @@ const API = {
   uninstallAgent(id) { return this.post(`/api/agents/uninstall/${id}`); },
 
   // Messages
-  sendMessage(content, agentId) {
-    return this.post('/api/messages', { content, agentId: agentId || undefined });
+  sendMessage(content, agentId, conversationId) {
+    return this.post('/api/messages', { content, agentId: agentId || undefined, conversationId: conversationId || undefined });
+  },
+
+  // Chat history
+  getConversations(limit = 50) {
+    return this.get(`/api/chat/conversations?limit=${limit}`);
+  },
+  getConversationMessages(conversationId, limit = 100) {
+    return this.get(`/api/chat/conversations/${conversationId}?limit=${limit}`);
   },
 
   // Permissions

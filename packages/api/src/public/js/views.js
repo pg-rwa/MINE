@@ -115,35 +115,102 @@ const Views = {
 
   // ─── Chat ──────────────────────────────────────
   async chat() {
-    const installed = await API.getInstalledAgents();
+    const [installed, conversations] = await Promise.all([
+      API.getInstalledAgents(),
+      API.getConversations(20).catch(() => []),
+    ]);
     const active = installed.filter(a => a.active);
 
-    return `
-      <div class="chat-container">
-        <div class="chat-agent-select">
-          <span class="agent-chip active" data-agent="" onclick="App.selectChatAgent(null, this)">Auto-route</span>
-          ${active.map(a => `
-            <span class="agent-chip" data-agent="${a.manifest.id}" onclick="App.selectChatAgent('${a.manifest.id}', this)">
-              ${esc(a.manifest.name)}
-            </span>
-          `).join('')}
-        </div>
-        <div class="chat-messages" id="chatMessages">
-          <div class="message agent">
-            <div class="message-avatar">M</div>
-            <div>
-              <div class="message-bubble">
-                Hello! I'm MINE, your personal assistant. ${active.length > 0
-                  ? `You have ${active.length} agent(s) active. Ask me anything!`
-                  : 'Install some agents first from the Agent Store, then come back to chat!'}
+    // If we have an active conversation, load its messages
+    let historyHtml = '';
+    if (App.conversationId) {
+      try {
+        const messages = await API.getConversationMessages(App.conversationId);
+        historyHtml = messages.map(m => {
+          if (m.role === 'user') {
+            return `
+              <div class="message user">
+                <div class="message-avatar">P</div>
+                <div><div class="message-bubble">${esc(m.content)}</div></div>
               </div>
-            </div>
+            `;
+          } else {
+            const agentIcon = AGENT_ICONS[m.agentId] || { emoji: 'M' };
+            const emojiStr = m.agentId && m.agentId !== 'system' ? agentIcon.emoji : 'M';
+            let suggestionsHtml = '';
+            if (m.metadata?.suggestions?.length > 0) {
+              suggestionsHtml = `
+                <div class="message-suggestions">
+                  ${m.metadata.suggestions.map(s => `<span class="suggestion-chip" onclick="App.useSuggestion('${esc(s)}')">${esc(s)}</span>`).join('')}
+                </div>
+              `;
+            }
+            const formattedContent = esc(m.content).replace(/\n/g, '<br/>');
+            return `
+              <div class="message agent">
+                <div class="message-avatar">${emojiStr}</div>
+                <div>
+                  <div class="message-bubble">
+                    ${m.agentId ? `<strong style="font-size:11px;color:var(--text-dim);display:block;margin-bottom:4px">${esc(m.agentId)}</strong>` : ''}
+                    ${formattedContent}
+                  </div>
+                  ${suggestionsHtml}
+                </div>
+              </div>
+            `;
+          }
+        }).join('');
+      } catch { /* ignore load error */ }
+    }
+
+    // Build conversation sidebar
+    const convListHtml = conversations.length > 0 ? conversations.map(c => `
+      <div class="conversation-item ${c.id === App.conversationId ? 'active' : ''}" onclick="App.loadConversation('${c.id}')">
+        <div class="conversation-title">${esc(c.title || 'Untitled')}</div>
+        <div class="conversation-meta">${new Date(c.lastMessageAt || c.createdAt).toLocaleDateString()}</div>
+      </div>
+    `).join('') : '<div style="padding:12px;color:var(--text-muted);font-size:12px">No conversations yet</div>';
+
+    const welcomeHtml = !historyHtml ? `
+      <div class="message agent">
+        <div class="message-avatar">M</div>
+        <div>
+          <div class="message-bubble">
+            Hello! I'm MINE, your personal assistant. ${active.length > 0
+              ? `You have ${active.length} agent(s) active. Ask me anything!`
+              : 'Install some agents first from the Agent Store, then come back to chat!'}
           </div>
         </div>
-        <div class="chat-input-area">
-          <input class="chat-input" id="chatInput" placeholder="Ask MINE anything..."
-                 onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();App.sendChat()}" />
-          <button class="chat-send" onclick="App.sendChat()">Send</button>
+      </div>
+    ` : '';
+
+    return `
+      <div class="chat-layout">
+        <div class="chat-sidebar">
+          <div class="chat-sidebar-header">
+            <span>Conversations</span>
+            <button class="btn btn-sm btn-secondary" onclick="App.newConversation()">+ New</button>
+          </div>
+          <div class="chat-sidebar-list">${convListHtml}</div>
+        </div>
+        <div class="chat-container">
+          <div class="chat-agent-select">
+            <span class="agent-chip active" data-agent="" onclick="App.selectChatAgent(null, this)">Auto-route</span>
+            ${active.map(a => `
+              <span class="agent-chip" data-agent="${a.manifest.id}" onclick="App.selectChatAgent('${a.manifest.id}', this)">
+                ${esc(a.manifest.name)}
+              </span>
+            `).join('')}
+          </div>
+          <div class="chat-messages" id="chatMessages">
+            ${welcomeHtml}
+            ${historyHtml}
+          </div>
+          <div class="chat-input-area">
+            <input class="chat-input" id="chatInput" placeholder="Ask MINE anything..."
+                   onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();App.sendChat()}" />
+            <button class="chat-send" onclick="App.sendChat()">Send</button>
+          </div>
         </div>
       </div>
     `;
