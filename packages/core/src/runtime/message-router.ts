@@ -1,6 +1,7 @@
 import { Message, AgentResponse } from '../types';
 import { AgentRuntime } from './agent-runtime';
 import { AIEngine } from '../ai/ai-engine';
+import { ActivityBus } from '../activity/activity-bus';
 
 /**
  * Routes natural language messages to the correct agent.
@@ -13,10 +14,18 @@ import { AIEngine } from '../ai/ai-engine';
 export class MessageRouter {
   private runtime: AgentRuntime;
   private aiEngine: AIEngine;
+  private activity: ActivityBus | null = null;
 
   constructor(runtime: AgentRuntime, aiEngine: AIEngine) {
     this.runtime = runtime;
     this.aiEngine = aiEngine;
+  }
+
+  /**
+   * Attach an activity bus for live progress streaming.
+   */
+  setActivityBus(bus: ActivityBus): void {
+    this.activity = bus;
   }
 
   /**
@@ -27,11 +36,19 @@ export class MessageRouter {
   async route(message: Message): Promise<AgentResponse> {
     let targetAgentId = message.agentId;
 
+    this.activity?.push('routing_started', 'Analyzing your request...', {
+      detail: message.content.slice(0, 100),
+    });
+
     if (!targetAgentId) {
       targetAgentId = await this.resolveAgent(message);
     }
 
     if (!targetAgentId) {
+      this.activity?.push('error', 'No agent found to handle this request', {
+        status: 'error',
+        detail: 'Try being more specific or check that the right agent is installed.',
+      });
       return {
         agentId: 'system',
         content: "I'm not sure which agent should handle that. Could you be more specific, or tell me which area this relates to?",
@@ -41,10 +58,36 @@ export class MessageRouter {
       };
     }
 
-    return this.runtime.handleMessage(targetAgentId, {
-      ...message,
+    this.activity?.push('agent_selected', `Routed to ${targetAgentId} agent`, {
+      agentId: targetAgentId,
+      status: 'completed',
+    });
+
+    this.activity?.push('agent_processing', `${targetAgentId} is working on your request...`, {
       agentId: targetAgentId,
     });
+
+    try {
+      const response = await this.runtime.handleMessage(targetAgentId, {
+        ...message,
+        agentId: targetAgentId,
+      });
+
+      this.activity?.push('agent_responded', `${targetAgentId} completed`, {
+        agentId: targetAgentId,
+        status: 'completed',
+        detail: response.content.slice(0, 120),
+      });
+
+      return response;
+    } catch (err: any) {
+      this.activity?.push('error', `${targetAgentId} encountered an error`, {
+        agentId: targetAgentId,
+        status: 'error',
+        detail: err.message || String(err),
+      });
+      throw err;
+    }
   }
 
   /**
@@ -57,6 +100,7 @@ export class MessageRouter {
     if (activeAgents.length === 0) return undefined;
 
     // Use intent analysis for smarter routing
+    this.activity?.push('info', 'Running intent analysis...', { status: 'running' });
     const intent = this.aiEngine.analyzeIntent(message.content);
 
     // If the intent clearly maps to a domain, use that
@@ -77,6 +121,8 @@ export class MessageRouter {
     if (scored.length > 0) return scored[0].id;
 
     // Last resort: use AI completion for routing
+    this.activity?.push('ai_call_started', 'Calling AI for smart routing...', { status: 'running' });
+
     const agentDescriptions = activeAgents
       .map((a) => `- ${a.manifest.id}: ${a.manifest.description} [keywords: ${a.manifest.capabilities.flatMap((c) => c.keywords).join(', ')}]`)
       .join('\n');
@@ -91,6 +137,9 @@ User message: "${message.content}"
 Agent ID:`;
 
     const result = await this.aiEngine.complete(prompt);
+
+    this.activity?.push('ai_call_completed', 'AI routing complete', { status: 'completed' });
+
     const agentId = result.trim().toLowerCase().replace(/['"]/g, '');
 
     if (agentId === 'none') return undefined;

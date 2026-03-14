@@ -5,7 +5,7 @@ const App = {
   currentView: 'dashboard',
   chatAgentId: null,
   conversationId: null,
-  _activityTimer: null,
+  _eventSource: null,
 
   async init() {
     // Set up navigation
@@ -25,6 +25,9 @@ const App = {
     document.getElementById('content').addEventListener('click', () => {
       document.getElementById('sidebar').classList.remove('open');
     });
+
+    // Connect to activity stream
+    this.connectActivityStream();
 
     // Load initial view
     await this.navigate('dashboard');
@@ -67,6 +70,106 @@ const App = {
           <div class="empty-state-text">Error loading view: ${esc(err.message)}</div>
         </div>
       `;
+    }
+  },
+
+  // ─── Activity Stream (SSE) ─────────────────────
+
+  connectActivityStream() {
+    if (this._eventSource) {
+      this._eventSource.close();
+    }
+
+    this._eventSource = new EventSource('/api/activity/stream');
+
+    this._eventSource.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        this.addActivityItem(data);
+      } catch { /* ignore parse errors */ }
+    };
+
+    this._eventSource.onerror = () => {
+      // Auto-reconnect is built into EventSource.
+      // Just update the panel to show disconnected state briefly.
+      const statusEl = document.getElementById('activityStatus');
+      if (statusEl) statusEl.textContent = 'Reconnecting...';
+      setTimeout(() => {
+        const s = document.getElementById('activityStatus');
+        if (s) s.textContent = 'Live';
+      }, 3000);
+    };
+  },
+
+  addActivityItem(event) {
+    const feed = document.getElementById('activityFeed');
+    if (!feed) return;
+
+    // Remove empty state
+    const emptyState = feed.querySelector('.activity-empty');
+    if (emptyState) emptyState.remove();
+
+    const item = document.createElement('div');
+    item.className = `activity-item activity-${event.status || 'running'}`;
+    item.dataset.eventId = event.id;
+
+    const iconMap = {
+      routing_started: '&#128269;',   // magnifying glass
+      agent_selected: '&#9989;',      // check
+      agent_processing: '&#9881;',    // gear
+      ai_call_started: '&#129504;',   // brain
+      ai_call_completed: '&#129504;', // brain
+      agent_delegation: '&#128257;',  // arrows
+      agent_responded: '&#9989;',     // check
+      error: '&#9888;',               // warning
+      info: '&#128161;',              // lightbulb
+    };
+
+    const statusClass = event.status === 'error' ? 'error'
+      : event.status === 'completed' ? 'done'
+      : 'running';
+
+    const time = new Date(event.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+
+    item.innerHTML = `
+      <div class="activity-item-icon ${statusClass}">${iconMap[event.type] || '&#128172;'}</div>
+      <div class="activity-item-body">
+        <div class="activity-item-msg">${esc(event.message)}</div>
+        ${event.detail ? `<div class="activity-item-detail">${esc(event.detail)}</div>` : ''}
+        <div class="activity-item-meta">
+          ${event.agentId ? `<span class="activity-agent-tag">${esc(event.agentId)}</span>` : ''}
+          <span class="activity-item-time">${time}</span>
+        </div>
+      </div>
+      <div class="activity-item-status">
+        ${statusClass === 'running' ? '<div class="activity-dot-pulse"></div>' : ''}
+        ${statusClass === 'done' ? '<span style="color:var(--green)">&#10003;</span>' : ''}
+        ${statusClass === 'error' ? '<span style="color:var(--red)">&#10007;</span>' : ''}
+      </div>
+    `;
+
+    feed.appendChild(item);
+
+    // Auto-scroll to bottom
+    feed.scrollTop = feed.scrollHeight;
+
+    // Limit to 100 items
+    while (feed.children.length > 100) {
+      feed.removeChild(feed.firstChild);
+    }
+  },
+
+  clearActivity() {
+    const feed = document.getElementById('activityFeed');
+    if (feed) {
+      feed.innerHTML = '<div class="activity-empty">No activity yet. Send a message to see live agent activity.</div>';
+    }
+  },
+
+  toggleActivityPanel() {
+    const panel = document.getElementById('activityPanel');
+    if (panel) {
+      panel.classList.toggle('collapsed');
     }
   },
 
@@ -183,74 +286,6 @@ const App = {
     }
   },
 
-  // ─── Activity Panel ─────────────────────────────
-
-  _startActivity(typingId) {
-    const startTime = Date.now();
-    const agentName = this.chatAgentId
-      ? this.chatAgentId.charAt(0).toUpperCase() + this.chatAgentId.slice(1)
-      : null;
-
-    const stages = [
-      { text: agentName ? `Routing to ${agentName} agent...` : 'Analyzing request & routing...', delay: 0 },
-      { text: agentName ? `${agentName} agent is processing...` : 'Agent is processing your request...', delay: 2000 },
-      { text: 'Waiting for AI response...', delay: 6000 },
-      { text: 'Still working... complex requests take longer.', delay: 15000 },
-      { text: 'This is taking a while. The agent may be stuck or waiting for external data.', delay: 30000 },
-    ];
-
-    const updateActivity = () => {
-      const el = document.getElementById(typingId);
-      if (!el) {
-        clearInterval(this._activityTimer);
-        return;
-      }
-
-      const elapsed = Date.now() - startTime;
-      const elapsedSec = Math.floor(elapsed / 1000);
-
-      // Find current stage
-      let currentStage = stages[0];
-      for (const stage of stages) {
-        if (elapsed >= stage.delay) currentStage = stage;
-      }
-
-      const timeStr = elapsedSec < 60
-        ? `${elapsedSec}s`
-        : `${Math.floor(elapsedSec / 60)}m ${elapsedSec % 60}s`;
-
-      const isLong = elapsed > 15000;
-
-      el.innerHTML = `
-        <div class="message-avatar" style="${isLong ? 'background:var(--orange-bg);color:var(--orange)' : ''}">
-          <div class="activity-pulse"></div>
-        </div>
-        <div style="flex:1">
-          <div class="activity-panel">
-            <div class="activity-header">
-              <span class="activity-status">${currentStage.text}</span>
-              <span class="activity-timer">${timeStr}</span>
-            </div>
-            <div class="activity-bar">
-              <div class="activity-bar-fill ${isLong ? 'slow' : ''}"></div>
-            </div>
-            ${isLong ? '<div class="activity-hint">If the agent seems stuck, try a simpler request or check if external services are accessible.</div>' : ''}
-          </div>
-        </div>
-      `;
-    };
-
-    updateActivity();
-    this._activityTimer = setInterval(updateActivity, 1000);
-  },
-
-  _stopActivity() {
-    if (this._activityTimer) {
-      clearInterval(this._activityTimer);
-      this._activityTimer = null;
-    }
-  },
-
   async sendChat() {
     const input = document.getElementById('chatInput');
     const text = input.value.trim();
@@ -267,7 +302,7 @@ const App = {
 
     const messages = document.getElementById('chatMessages');
 
-    // Add user message (use DOM methods to avoid destroying existing elements)
+    // Add user message
     const userMsgDiv = document.createElement('div');
     userMsgDiv.className = 'message user';
     userMsgDiv.innerHTML = `
@@ -277,47 +312,30 @@ const App = {
     messages.appendChild(userMsgDiv);
     messages.scrollTop = messages.scrollHeight;
 
-    // Show activity panel instead of simple "Thinking..."
+    // Show simple typing indicator in chat (activity panel shows the details)
     const typingId = 'typing-' + Date.now();
-    const agentLabel = this.chatAgentId
-      ? this.chatAgentId.charAt(0).toUpperCase() + this.chatAgentId.slice(1)
-      : null;
-    const initialStage = agentLabel ? `Routing to ${agentLabel} agent...` : 'Analyzing request & routing...';
-
-    const activityDiv = document.createElement('div');
-    activityDiv.className = 'message agent activity-message';
-    activityDiv.id = typingId;
-    activityDiv.innerHTML = `
-      <div class="message-avatar">
-        <div class="activity-pulse"></div>
-      </div>
-      <div style="flex:1">
-        <div class="activity-panel">
-          <div class="activity-header">
-            <span class="activity-status">${initialStage}</span>
-            <span class="activity-timer">0s</span>
-          </div>
-          <div class="activity-bar">
-            <div class="activity-bar-fill"></div>
-          </div>
-        </div>
-      </div>
+    const typingDiv = document.createElement('div');
+    typingDiv.className = 'message agent';
+    typingDiv.id = typingId;
+    typingDiv.innerHTML = `
+      <div class="message-avatar"><div class="activity-dot-pulse"></div></div>
+      <div><div class="message-bubble" style="color:var(--text-muted);font-size:13px">
+        Processing<span class="typing-dots"><span>.</span><span>.</span><span>.</span></span>
+        <span style="font-size:11px;color:var(--text-dim);margin-left:8px">see activity panel &rarr;</span>
+      </div></div>
     `;
-    messages.appendChild(activityDiv);
+    messages.appendChild(typingDiv);
     messages.scrollTop = messages.scrollHeight;
-    this._startActivity(typingId);
 
     try {
       const response = await API.sendMessage(text, this.chatAgentId, this.conversationId);
-
-      this._stopActivity();
 
       // Track conversationId so subsequent messages go to the same conversation
       if (response.conversationId) {
         this.conversationId = response.conversationId;
       }
 
-      // Remove activity panel
+      // Remove typing indicator
       document.getElementById(typingId)?.remove();
 
       // Add agent response
@@ -374,10 +392,9 @@ const App = {
       this.refreshConversationSidebar();
 
     } catch (err) {
-      this._stopActivity();
       document.getElementById(typingId)?.remove();
 
-      // Show detailed error panel
+      // Show error in chat
       const errorDiv = document.createElement('div');
       errorDiv.className = 'message agent';
       errorDiv.innerHTML = `
@@ -389,7 +406,6 @@ const App = {
               <strong>Agent Error</strong>
             </div>
             <div class="error-detail">${esc(err.message)}</div>
-            <div class="error-hint">This could mean the agent couldn't complete the task. Try rephrasing your request or check if the required permissions/integrations are set up.</div>
           </div>
         </div>
       `;
@@ -460,23 +476,19 @@ const App = {
         input.style.borderColor = '';
       }
       if (val) {
-        // Auto-convert numbers
         data[input.name] = input.type === 'number' ? parseFloat(val) : val;
       }
     });
 
     if (!hasRequired) return;
 
-    // Disable the save button
     const btn = formEl.querySelector('button');
     btn.disabled = true;
     btn.textContent = 'Saving...';
 
-    // Send as a message to the agent
     const saveText = JSON.stringify(data);
     const messages = document.getElementById('chatMessages');
 
-    // Show compact user message
     messages.innerHTML += `
       <div class="message user">
         <div class="message-avatar">P</div>
@@ -484,7 +496,6 @@ const App = {
       </div>
     `;
 
-    // Remove the form
     formEl.innerHTML = '<div style="text-align:center;color:var(--green);font-size:12px;padding:8px">Submitted!</div>';
 
     try {
@@ -528,7 +539,6 @@ const App = {
   async grantPermFromChat(agentId, resource) {
     try {
       await API.grantPermission(agentId, resource, 'observe', ['read'], '30d');
-      // Re-send a message to trigger the agent with new permissions
       const input = document.getElementById('chatInput');
       input.value = `Show my ${resource}`;
       await this.sendChat();
@@ -544,10 +554,8 @@ const App = {
       const result = await API.startAuth(integrationId);
 
       if (result.status === 'redirect' && result.authUrl) {
-        // Real OAuth — redirect to provider
         window.location.href = result.authUrl;
       } else if (result.status === 'not_configured') {
-        // API keys not set — offer demo connect
         if (confirm(`${result.message}\n\nWould you like to connect in demo mode instead?`)) {
           await API.connectDemo(integrationId);
           await this.navigate('integrations');
@@ -556,7 +564,6 @@ const App = {
         alert(result.message);
       }
     } catch (err) {
-      // Fallback: demo connect
       if (confirm(`OAuth not configured yet. Connect in demo mode?`)) {
         await API.connectDemo(integrationId);
         await this.navigate('integrations');

@@ -5,6 +5,7 @@ import { DataVault } from '../vault/data-vault';
 import { AuditLog } from '../audit/audit-log';
 import { AIEngine } from '../ai/ai-engine';
 import type { PersistenceLayer } from '../persistence/persistence-layer';
+import type { ActivityBus } from '../activity/activity-bus';
 
 /**
  * The interface every agent must implement.
@@ -95,6 +96,7 @@ export class AgentRuntime extends EventEmitter<RuntimeEvents> {
   private auditLog: AuditLog;
   private aiEngine: AIEngine;
   private persistence: PersistenceLayer | null = null;
+  private activity: ActivityBus | null = null;
 
   constructor(permissions: PermissionEngine, vault: DataVault, auditLog: AuditLog, aiEngine?: AIEngine) {
     super();
@@ -109,6 +111,13 @@ export class AgentRuntime extends EventEmitter<RuntimeEvents> {
    */
   enablePersistence(persistence: PersistenceLayer): void {
     this.persistence = persistence;
+  }
+
+  /**
+   * Attach activity bus for live progress streaming.
+   */
+  setActivityBus(bus: ActivityBus): void {
+    this.activity = bus;
   }
 
   /**
@@ -335,6 +344,11 @@ export class AgentRuntime extends EventEmitter<RuntimeEvents> {
         if (!this.activeAgents.has(targetAgentId)) return null;
         if (!this.activeAgents.has(agentId)) return null;
 
+        this.activity?.push('agent_delegation', `${agentId} delegating to ${targetAgentId}`, {
+          agentId,
+          detail: message.slice(0, 100),
+        });
+
         // Audit the inter-agent communication
         this.auditLog.log(userId, agentId, 'agent_delegation', {
           from: agentId,
@@ -350,6 +364,10 @@ export class AgentRuntime extends EventEmitter<RuntimeEvents> {
           attachments: [],
           timestamp: new Date(),
         };
+
+        this.activity?.push('agent_processing', `${targetAgentId} processing delegated task...`, {
+          agentId: targetAgentId,
+        });
 
         return this.handleMessage(targetAgentId, msg);
       },

@@ -16,4 +16,5 @@ export * from './integrations/adapter-types';
 export * from './integrations/adapters';
 export * from './marketplace/agent-marketplace';
 export * from './persistence/persistence-layer';
+export * from './activity/activity-bus';
 export * from './types';

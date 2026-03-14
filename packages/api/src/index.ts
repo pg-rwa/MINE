@@ -13,6 +13,7 @@ import {
   AgentMarketplace,
   createAdapterRegistry,
   PersistenceLayer,
+  ActivityBus,
 } from '@mine/core';
 import { registerBuiltInAgents } from '@mine/agents';
 import { createApp } from './app';
@@ -77,11 +78,16 @@ async function main() {
   }
 
   // ─── Initialize Agent System ───────────────────────
+  // ─── Activity Bus (Live Streaming) ────────────────
+  const activityBus = new ActivityBus();
+
   const runtime = new AgentRuntime(permissions, vault, auditLog, aiEngine);
   runtime.enablePersistence(persistence);
+  runtime.setActivityBus(activityBus);
 
   const registry = new AgentRegistry();
   const router = new MessageRouter(runtime, aiEngine);
+  router.setActivityBus(activityBus);
 
   // Register all built-in agents
   registerBuiltInAgents(registry);
@@ -104,6 +110,7 @@ async function main() {
     workflows,
     marketplace,
     persistence,
+    activityBus,
   });
 
   const port = parseInt(process.env.PORT || '3000', 10);

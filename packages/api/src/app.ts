@@ -17,6 +17,7 @@ import {
   WorkflowEngine,
   AgentMarketplace,
   PersistenceLayer,
+  ActivityBus,
 } from '@mine/core';
 import { agentRoutes } from './routes/agents';
 import { messageRoutes } from './routes/messages';
@@ -25,6 +26,7 @@ import { vaultRoutes } from './routes/vault';
 import { insightRoutes } from './routes/insights';
 import { integrationRoutes } from './routes/integrations';
 import { chatRoutes } from './routes/chat';
+import { activityRoutes } from './routes/activity';
 
 export interface AppContext {
   runtime: AgentRuntime;
@@ -40,6 +42,7 @@ export interface AppContext {
   workflows: WorkflowEngine;
   marketplace: AgentMarketplace;
   persistence: PersistenceLayer | null;
+  activityBus: ActivityBus | null;
 }
 
 export async function createApp(ctx: AppContext) {
@@ -81,6 +84,7 @@ export async function createApp(ctx: AppContext) {
   await app.register(insightRoutes(ctx), { prefix: '/api/insights' });
   await app.register(integrationRoutes(ctx), { prefix: '/api/integrations' });
   await app.register(chatRoutes(ctx), { prefix: '/api/chat' });
+  await app.register(activityRoutes(ctx), { prefix: '/api/activity' });
 
   // Serve frontend static files
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
