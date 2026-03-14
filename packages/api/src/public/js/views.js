@@ -214,7 +214,14 @@ const Views = {
             ${welcomeHtml}
             ${historyHtml}
           </div>
+          <div id="attachmentPreview" class="attachment-preview" style="display:none"></div>
           <div class="chat-input-area">
+            <input type="file" id="fileInput" style="display:none"
+                   accept="image/*,.pdf,.txt,.csv,.json,.xlsx,.xls"
+                   onchange="App.handleFileSelect(event)" />
+            <button class="chat-attach" onclick="document.getElementById('fileInput').click()" title="Attach file or image">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/></svg>
+            </button>
             <input class="chat-input" id="chatInput" placeholder="Ask MINE anything..."
                    onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();App.sendChat()}" />
             <button class="chat-send" onclick="App.sendChat()">Send</button>

@@ -34,6 +34,17 @@ export interface AIConfig {
 
 export type TaskTier = 'fast' | 'smart';
 
+/** Attachment content for multimodal messages */
+export interface MessageAttachment {
+  type: 'image' | 'file';
+  mimeType: string;
+  /** base64-encoded data for images */
+  data?: string;
+  /** Extracted text content for documents */
+  textContent?: string;
+  filename?: string;
+}
+
 export interface EmbeddingResult {
   vector: number[];
   model: string;
@@ -366,6 +377,114 @@ export class AIEngine {
     return this.callWithFailover(tier, (provider, model) =>
       this.providerChat(provider, model, systemPrompt, userMessage, maxTokens)
     );
+  }
+
+  /**
+   * Chat with attachments (images, documents).
+   * Builds multimodal content blocks for Claude vision / OpenAI vision.
+   */
+  async chatWithAttachments(
+    systemPrompt: string,
+    userMessage: string,
+    attachments: MessageAttachment[],
+    options?: { maxTokens?: number; tier?: TaskTier }
+  ): Promise<string> {
+    const tier = options?.tier ?? 'smart';
+    const maxTokens = options?.maxTokens ?? this.defaultMaxTokens;
+
+    return this.callWithFailover(tier, async (provider, model) => {
+      if (provider.type === 'claude') {
+        return this.claudeChatMultimodal(
+          provider.client as Anthropic, model, systemPrompt, userMessage, attachments, maxTokens
+        );
+      } else {
+        return this.openaiChatMultimodal(
+          provider.client as OpenAI, model, systemPrompt, userMessage, attachments, maxTokens
+        );
+      }
+    });
+  }
+
+  private async claudeChatMultimodal(
+    client: Anthropic,
+    model: string,
+    systemPrompt: string,
+    userMessage: string,
+    attachments: MessageAttachment[],
+    maxTokens: number
+  ): Promise<string> {
+    const content: Anthropic.Messages.ContentBlockParam[] = [];
+
+    // Add images as image content blocks
+    for (const att of attachments) {
+      if (att.type === 'image' && att.data) {
+        content.push({
+          type: 'image',
+          source: {
+            type: 'base64',
+            media_type: att.mimeType as 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp',
+            data: att.data,
+          },
+        });
+      } else if (att.textContent) {
+        // Document text — include as text block
+        content.push({
+          type: 'text',
+          text: `[Attached file: ${att.filename || 'document'}]\n${att.textContent}`,
+        });
+      }
+    }
+
+    // Add user message
+    content.push({ type: 'text', text: userMessage });
+
+    const response = await client.messages.create({
+      model,
+      max_tokens: maxTokens,
+      system: systemPrompt,
+      messages: [{ role: 'user', content }],
+    });
+    const textBlock = response.content.find(b => b.type === 'text');
+    return textBlock?.text ?? '';
+  }
+
+  private async openaiChatMultimodal(
+    client: OpenAI,
+    model: string,
+    systemPrompt: string,
+    userMessage: string,
+    attachments: MessageAttachment[],
+    maxTokens: number
+  ): Promise<string> {
+    const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
+      { role: 'system', content: systemPrompt },
+    ];
+
+    const userContent: OpenAI.Chat.Completions.ChatCompletionContentPart[] = [];
+
+    for (const att of attachments) {
+      if (att.type === 'image' && att.data) {
+        userContent.push({
+          type: 'image_url',
+          image_url: { url: `data:${att.mimeType};base64,${att.data}` },
+        });
+      } else if (att.textContent) {
+        userContent.push({
+          type: 'text',
+          text: `[Attached file: ${att.filename || 'document'}]\n${att.textContent}`,
+        });
+      }
+    }
+
+    userContent.push({ type: 'text', text: userMessage });
+    messages.push({ role: 'user', content: userContent });
+
+    const response = await client.chat.completions.create({
+      model,
+      max_tokens: maxTokens,
+      messages,
+    });
+    return response.choices[0]?.message?.content ?? '';
   }
 
   /**

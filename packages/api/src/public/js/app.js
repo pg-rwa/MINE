@@ -286,12 +286,64 @@ const App = {
     }
   },
 
+  // ─── File Attachment State ──────────────────────────
+  pendingAttachments: [],
+
+  async handleFileSelect(event) {
+    const file = event.target.files[0];
+    if (!file) return;
+
+    try {
+      const result = await API.uploadFile(file);
+      this.pendingAttachments.push(result);
+      this.updateAttachmentPreview();
+    } catch (err) {
+      alert('Upload failed: ' + err.message);
+    }
+
+    // Reset file input so the same file can be re-selected
+    event.target.value = '';
+  },
+
+  removeAttachment(index) {
+    this.pendingAttachments.splice(index, 1);
+    this.updateAttachmentPreview();
+  },
+
+  updateAttachmentPreview() {
+    const preview = document.getElementById('attachmentPreview');
+    if (!preview) return;
+
+    if (this.pendingAttachments.length === 0) {
+      preview.style.display = 'none';
+      preview.innerHTML = '';
+      return;
+    }
+
+    preview.style.display = 'flex';
+    preview.innerHTML = this.pendingAttachments.map((att, i) => {
+      const icon = att.type === 'image'
+        ? `<img src="${att.uri}" alt="${esc(att.filename)}" />`
+        : '📄';
+      return `<div class="attachment-chip">
+        ${icon}
+        <span>${esc(att.filename)}</span>
+        <span class="remove-attachment" onclick="App.removeAttachment(${i})">&times;</span>
+      </div>`;
+    }).join('');
+  },
+
   async sendChat() {
     const input = document.getElementById('chatInput');
     const text = input.value.trim();
-    if (!text) return;
+    if (!text && this.pendingAttachments.length === 0) return;
 
     input.value = '';
+
+    // Grab and clear pending attachments
+    const attachments = [...this.pendingAttachments];
+    this.pendingAttachments = [];
+    this.updateAttachmentPreview();
 
     // Disable send while processing
     const sendBtn = document.querySelector('.chat-send');
@@ -302,12 +354,24 @@ const App = {
 
     const messages = document.getElementById('chatMessages');
 
+    // Build user message HTML with attachment previews
+    let attachmentHtml = '';
+    if (attachments.length > 0) {
+      attachmentHtml = '<div style="display:flex;gap:6px;margin-bottom:6px;flex-wrap:wrap">' +
+        attachments.map(att => {
+          if (att.type === 'image') {
+            return `<img src="${att.uri}" alt="${esc(att.filename)}" style="max-width:200px;max-height:150px;border-radius:8px" />`;
+          }
+          return `<span class="attachment-chip">📄 ${esc(att.filename)}</span>`;
+        }).join('') + '</div>';
+    }
+
     // Add user message
     const userMsgDiv = document.createElement('div');
     userMsgDiv.className = 'message user';
     userMsgDiv.innerHTML = `
       <div class="message-avatar">P</div>
-      <div><div class="message-bubble">${esc(text)}</div></div>
+      <div>${attachmentHtml}<div class="message-bubble">${esc(text || 'Sent attachment(s)')}</div></div>
     `;
     messages.appendChild(userMsgDiv);
     messages.scrollTop = messages.scrollHeight;
@@ -328,7 +392,10 @@ const App = {
     messages.scrollTop = messages.scrollHeight;
 
     try {
-      const response = await API.sendMessage(text, this.chatAgentId, this.conversationId);
+      const msgAttachments = attachments.length > 0 ? attachments.map(a => ({
+        type: a.type, uri: a.uri, mimeType: a.mimeType, filename: a.filename,
+      })) : undefined;
+      const response = await API.sendMessage(text || 'Please analyze the attached file(s)', this.chatAgentId, this.conversationId, msgAttachments);
 
       // Track conversationId so subsequent messages go to the same conversation
       if (response.conversationId) {

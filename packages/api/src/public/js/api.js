@@ -31,8 +31,29 @@ const API = {
   uninstallAgent(id) { return this.post(`/api/agents/uninstall/${id}`); },
 
   // Messages
-  sendMessage(content, agentId, conversationId) {
-    return this.post('/api/messages', { content, agentId: agentId || undefined, conversationId: conversationId || undefined });
+  sendMessage(content, agentId, conversationId, attachments) {
+    return this.post('/api/messages', {
+      content,
+      agentId: agentId || undefined,
+      conversationId: conversationId || undefined,
+      attachments: attachments || undefined,
+    });
+  },
+
+  // File upload
+  async uploadFile(file) {
+    const formData = new FormData();
+    formData.append('file', file);
+    const res = await fetch('/api/uploads', {
+      method: 'POST',
+      headers: { 'x-user-id': this.userId },
+      body: formData,
+    });
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(err.error || 'Upload failed');
+    }
+    return res.json();
   },
 
   // Chat history

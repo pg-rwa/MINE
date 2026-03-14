@@ -8,6 +8,7 @@ import {
   Insight,
   UserIntent,
   DataCategory,
+  MessageAttachment,
 } from '@mine/core';
 
 /**
@@ -75,9 +76,98 @@ export abstract class BaseAgent implements IAgent {
       userMessage = `[Recent conversation]\n${historyText}\n\n[Current message]\n${message.content}`;
     }
 
+    // Use multimodal if message has attachments
+    const aiAttachments = this.resolveAttachments(message);
+    if (aiAttachments.length > 0) {
+      return context.aiEngine.chatWithAttachments(systemPrompt, userMessage, aiAttachments, {
+        maxTokens: 1024, // More tokens for document analysis
+      });
+    }
+
     return context.aiEngine.chat(systemPrompt, userMessage, {
       maxTokens: 512,
     });
+  }
+
+  /**
+   * Resolve message attachments into AI-ready format.
+   * Reads file contents from disk for images (base64) and documents (text extraction).
+   */
+  protected resolveAttachments(message: Message): MessageAttachment[] {
+    if (!message.attachments || message.attachments.length === 0) return [];
+
+    const resolved: MessageAttachment[] = [];
+
+    for (const att of message.attachments) {
+      const meta = att.metadata as Record<string, string> | undefined;
+      const mimeType = meta?.mimeType || 'application/octet-stream';
+      const filename = meta?.filename || 'file';
+
+      try {
+        // Resolve file path from URI
+        const filePath = this.resolveFilePath(att.uri);
+        if (!filePath) continue;
+
+        const fs = require('fs');
+        if (!fs.existsSync(filePath)) continue;
+
+        if (att.type === 'image' || mimeType.startsWith('image/')) {
+          // Images: read as base64 for vision models
+          const buffer = fs.readFileSync(filePath);
+          resolved.push({
+            type: 'image',
+            mimeType,
+            data: buffer.toString('base64'),
+            filename,
+          });
+        } else {
+          // Documents: extract text content
+          const textContent = this.extractTextFromFile(filePath, mimeType, filename);
+          if (textContent) {
+            resolved.push({
+              type: 'file',
+              mimeType,
+              textContent,
+              filename,
+            });
+          }
+        }
+      } catch {
+        // Skip unreadable attachments
+      }
+    }
+
+    return resolved;
+  }
+
+  private resolveFilePath(uri: string): string | null {
+    // URI format: /api/uploads/filename.ext
+    const match = uri.match(/\/api\/uploads\/(.+)$/);
+    if (!match) return null;
+    const path = require('path');
+    return path.join(process.cwd(), 'uploads', match[1]);
+  }
+
+  private extractTextFromFile(filePath: string, mimeType: string, filename: string): string | null {
+    const fs = require('fs');
+
+    if (mimeType === 'text/plain' || mimeType === 'text/csv' || mimeType === 'application/json') {
+      const text = fs.readFileSync(filePath, 'utf-8');
+      return text.slice(0, 50000); // Cap at 50k chars
+    }
+
+    if (mimeType === 'application/pdf') {
+      // For PDFs we return a placeholder — full PDF parsing would require a library
+      // The AI will still get the filename context and user's question
+      return `[PDF document: ${filename}]\n(PDF text extraction requires the user to copy-paste content or use OCR. The file has been uploaded successfully.)`;
+    }
+
+    // Excel files — return a note about the file
+    if (mimeType.includes('spreadsheet') || mimeType.includes('excel')) {
+      return `[Excel file: ${filename}]\n(Spreadsheet uploaded. For best results, export as CSV and re-upload, or describe what data you need extracted.)`;
+    }
+
+    return null;
   }
 
   /**

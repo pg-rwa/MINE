@@ -27,6 +27,7 @@ import { insightRoutes } from './routes/insights';
 import { integrationRoutes } from './routes/integrations';
 import { chatRoutes } from './routes/chat';
 import { activityRoutes } from './routes/activity';
+import { uploadRoutes } from './routes/uploads';
 
 export interface AppContext {
   runtime: AgentRuntime;
@@ -85,6 +86,7 @@ export async function createApp(ctx: AppContext) {
   await app.register(integrationRoutes(ctx), { prefix: '/api/integrations' });
   await app.register(chatRoutes(ctx), { prefix: '/api/chat' });
   await app.register(activityRoutes(ctx), { prefix: '/api/activity' });
+  await app.register(uploadRoutes(ctx), { prefix: '/api/uploads' });
 
   // Serve frontend static files
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
