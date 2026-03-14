@@ -15,4 +15,5 @@ export * from './integrations/integration-gateway';
 export * from './integrations/adapter-types';
 export * from './integrations/adapters';
 export * from './marketplace/agent-marketplace';
+export * from './persistence/persistence-layer';
 export * from './types';

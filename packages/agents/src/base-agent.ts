@@ -65,7 +65,17 @@ export abstract class BaseAgent implements IAgent {
 
     const systemPrompt = this.buildSystemPrompt(context, extraContext);
 
-    return context.aiEngine.chat(systemPrompt, message.content, {
+    // Include recent conversation history for continuity
+    const history = context.getRecentHistory(6);
+    let userMessage = message.content;
+    if (history.length > 0) {
+      const historyText = history
+        .map(h => `${h.role === 'user' ? 'User' : 'You'}: ${h.content.slice(0, 200)}`)
+        .join('\n');
+      userMessage = `[Recent conversation]\n${historyText}\n\n[Current message]\n${message.content}`;
+    }
+
+    return context.aiEngine.chat(systemPrompt, userMessage, {
       maxTokens: 512,
     });
   }
@@ -106,6 +116,29 @@ Guidelines:
 
     if (extraContext) {
       prompt += `\n\nUser's data context:\n${extraContext}`;
+    }
+
+    // Include cross-agent shared memory so agents know what others have learned
+    const sharedContext = context.getSharedContext();
+    if (sharedContext.length > 0) {
+      const sharedText = sharedContext
+        .filter(m => m.agentId !== this.manifest.id)
+        .slice(0, 10)
+        .map(m => `[${m.agentId}] ${m.key}: ${typeof m.value === 'string' ? m.value : JSON.stringify(m.value)}`)
+        .join('\n');
+      if (sharedText) {
+        prompt += `\n\nKnowledge from other agents (use to avoid asking the user again):\n${sharedText}`;
+      }
+    }
+
+    // Include this agent's own memories
+    const ownMemories = context.recall();
+    if (ownMemories.length > 0) {
+      const memText = ownMemories
+        .slice(0, 10)
+        .map(m => `${m.key}: ${typeof m.value === 'string' ? m.value : JSON.stringify(m.value)}`)
+        .join('\n');
+      prompt += `\n\nYour remembered facts about this user:\n${memText}`;
     }
 
     return prompt;

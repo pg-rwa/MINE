@@ -16,6 +16,7 @@ import {
   IntegrationGateway,
   WorkflowEngine,
   AgentMarketplace,
+  PersistenceLayer,
 } from '@mine/core';
 import { agentRoutes } from './routes/agents';
 import { messageRoutes } from './routes/messages';
@@ -23,6 +24,7 @@ import { permissionRoutes } from './routes/permissions';
 import { vaultRoutes } from './routes/vault';
 import { insightRoutes } from './routes/insights';
 import { integrationRoutes } from './routes/integrations';
+import { chatRoutes } from './routes/chat';
 
 export interface AppContext {
   runtime: AgentRuntime;
@@ -37,6 +39,7 @@ export interface AppContext {
   integrations: IntegrationGateway;
   workflows: WorkflowEngine;
   marketplace: AgentMarketplace;
+  persistence: PersistenceLayer | null;
 }
 
 export async function createApp(ctx: AppContext) {
@@ -58,6 +61,7 @@ export async function createApp(ctx: AppContext) {
   await app.register(vaultRoutes(ctx), { prefix: '/api/vault' });
   await app.register(insightRoutes(ctx), { prefix: '/api/insights' });
   await app.register(integrationRoutes(ctx), { prefix: '/api/integrations' });
+  await app.register(chatRoutes(ctx), { prefix: '/api/chat' });
 
   // Serve frontend static files
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -74,6 +78,7 @@ export async function createApp(ctx: AppContext) {
       available: ctx.aiEngine.isAvailable,
       providers: ctx.aiEngine.getProviderStatus(),
     },
+    persistence: ctx.persistence ? 'sqlite' : 'memory',
   }));
 
   return app;

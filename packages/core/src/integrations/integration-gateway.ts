@@ -2,6 +2,7 @@ import { EventEmitter } from 'eventemitter3';
 import { DataCategory } from '../types';
 import { IntegrationAdapter, OAuthTokens, NormalizedEntry } from './adapter-types';
 import { DataVault } from '../vault/data-vault';
+import type { PersistenceLayer } from '../persistence/persistence-layer';
 
 export interface IntegrationConfig {
   id: string;
@@ -42,6 +43,7 @@ export class IntegrationGateway extends EventEmitter<GatewayEvents> {
   private connections: Map<string, IntegrationConnection> = new Map();
   private adapters: Map<string, IntegrationAdapter> = new Map();
   private vault: DataVault | null = null;
+  private persistence: PersistenceLayer | null = null;
 
   /**
    * Set the adapter registry and data vault for real sync operations.
@@ -49,6 +51,29 @@ export class IntegrationGateway extends EventEmitter<GatewayEvents> {
   configure(adapters: Map<string, IntegrationAdapter>, vault: DataVault): void {
     this.adapters = adapters;
     this.vault = vault;
+  }
+
+  /**
+   * Enable persistence — restores connections from disk on startup.
+   */
+  enablePersistence(persistence: PersistenceLayer): void {
+    this.persistence = persistence;
+    this.loadFromDisk();
+  }
+
+  private loadFromDisk(): void {
+    if (!this.persistence) return;
+    const saved = this.persistence.getConnections();
+    for (const conn of saved) {
+      // Restore tokens with proper Date objects
+      if (conn.tokens?.expiresAt && typeof conn.tokens.expiresAt === 'string') {
+        conn.tokens.expiresAt = new Date(conn.tokens.expiresAt);
+      }
+      this.connections.set(conn.id, conn);
+    }
+    if (saved.length > 0) {
+      console.log(`Integrations: Restored ${saved.length} connection(s) from disk`);
+    }
   }
 
   /**
@@ -87,6 +112,7 @@ export class IntegrationGateway extends EventEmitter<GatewayEvents> {
       existing.tokens = tokens;
       existing.status = 'connected';
       existing.errorMessage = undefined;
+      this.persistConnection(existing);
       return existing;
     }
 
@@ -101,6 +127,7 @@ export class IntegrationGateway extends EventEmitter<GatewayEvents> {
     };
 
     this.connections.set(connection.id, connection);
+    this.persistConnection(connection);
     this.emit('connection:created', connection);
     return connection;
   }
@@ -149,6 +176,7 @@ export class IntegrationGateway extends EventEmitter<GatewayEvents> {
       connection.status = 'connected';
       connection.lastSync = new Date();
       connection.lastSyncCount = entries.length;
+      this.persistConnection(connection);
       this.emit('sync:completed', connectionId, entries.length);
       return entries;
     } catch (error) {
@@ -189,7 +217,12 @@ export class IntegrationGateway extends EventEmitter<GatewayEvents> {
       connection.status = 'disconnected';
       connection.credentials = {};
       connection.tokens = undefined;
+      this.persistConnection(connection);
     }
+  }
+
+  private persistConnection(connection: IntegrationConnection): void {
+    this.persistence?.saveConnection(connection);
   }
 
   /**

@@ -4,6 +4,7 @@ import { PermissionEngine } from '../permissions/permission-engine';
 import { DataVault } from '../vault/data-vault';
 import { AuditLog } from '../audit/audit-log';
 import { AIEngine } from '../ai/ai-engine';
+import type { PersistenceLayer } from '../persistence/persistence-layer';
 
 /**
  * The interface every agent must implement.
@@ -58,6 +59,21 @@ export interface AgentContext {
 
   /** List all active agent IDs and names */
   listActiveAgents(): Array<{ id: string; name: string; description: string }>;
+
+  /** Store a memory (persisted across restarts, shared with other agents) */
+  remember(key: string, value: unknown, type?: 'fact' | 'preference' | 'context' | 'cross_ref'): void;
+
+  /** Recall this agent's memories */
+  recall(type?: 'fact' | 'preference' | 'context' | 'cross_ref'): Array<{ key: string; value: unknown }>;
+
+  /** Get shared context — memories from ALL agents (cross-agent knowledge) */
+  getSharedContext(type?: string): Array<{ agentId: string; key: string; value: unknown }>;
+
+  /** Search across all agents' memories and recent chats for keywords */
+  searchContext(keywords: string[]): { memories: any[]; recentChats: any[] };
+
+  /** Get recent conversation history with this agent */
+  getRecentHistory(limit?: number): Array<{ role: string; content: string }>;
 }
 
 interface RuntimeEvents {
@@ -78,6 +94,7 @@ export class AgentRuntime extends EventEmitter<RuntimeEvents> {
   private vault: DataVault;
   private auditLog: AuditLog;
   private aiEngine: AIEngine;
+  private persistence: PersistenceLayer | null = null;
 
   constructor(permissions: PermissionEngine, vault: DataVault, auditLog: AuditLog, aiEngine?: AIEngine) {
     super();
@@ -85,6 +102,13 @@ export class AgentRuntime extends EventEmitter<RuntimeEvents> {
     this.vault = vault;
     this.auditLog = auditLog;
     this.aiEngine = aiEngine ?? new AIEngine({ provider: 'claude', model: 'claude-sonnet-4-6' });
+  }
+
+  /**
+   * Enable persistence for agent memory and chat history.
+   */
+  enablePersistence(persistence: PersistenceLayer): void {
+    this.persistence = persistence;
   }
 
   /**
@@ -248,6 +272,8 @@ export class AgentRuntime extends EventEmitter<RuntimeEvents> {
   }
 
   private createContext(userId: string, agentId: string): AgentContext {
+    const persistence = this.persistence;
+
     return {
       userId,
       agentId,
@@ -289,17 +315,48 @@ export class AgentRuntime extends EventEmitter<RuntimeEvents> {
           actions: ['read'],
           reason,
         });
-        // In real app, this would await user approval via UI
         return false;
       },
 
       schedule: async (_cron: string, _eventType: string, _payload: Record<string, unknown>) => {
-        // Delegates to Scheduler service
         return crypto.randomUUID();
       },
 
       notify: async (title: string, body: string, priority = 'medium' as const) => {
         this.auditLog.log(userId, agentId, 'notification_sent', { title, priority });
+      },
+
+      // ─── Memory & Cross-Agent Context ──────────────
+
+      remember: (key: string, value: unknown, type: 'fact' | 'preference' | 'context' | 'cross_ref' = 'fact') => {
+        persistence?.setMemory({ userId, agentId, memoryType: type, key, value });
+      },
+
+      recall: (type?: 'fact' | 'preference' | 'context' | 'cross_ref') => {
+        if (!persistence) return [];
+        return persistence.getMemory(userId, agentId, type).map(m => ({
+          key: m.key,
+          value: m.value,
+        }));
+      },
+
+      getSharedContext: (type?: string) => {
+        if (!persistence) return [];
+        return persistence.getSharedMemory(userId, type).map(m => ({
+          agentId: m.agentId,
+          key: m.key,
+          value: m.value,
+        }));
+      },
+
+      searchContext: (keywords: string[]) => {
+        if (!persistence) return { memories: [], recentChats: [] };
+        return persistence.searchContext(userId, keywords);
+      },
+
+      getRecentHistory: (limit = 10) => {
+        if (!persistence) return [];
+        return persistence.getRecentAgentContext(userId, agentId, limit);
       },
     };
   }

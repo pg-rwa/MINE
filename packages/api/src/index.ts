@@ -12,6 +12,7 @@ import {
   WorkflowEngine,
   AgentMarketplace,
   createAdapterRegistry,
+  PersistenceLayer,
 } from '@mine/core';
 import { registerBuiltInAgents } from '@mine/agents';
 import { createApp } from './app';
@@ -20,6 +21,11 @@ import { createApp } from './app';
  * Bootstrap the MINE backend.
  */
 async function main() {
+  // ─── Persistence (SQLite) ───────────────────────────
+  // Data survives restarts, upgrades, and redeployments.
+  // Set MINE_DB_PATH to control where the database lives (default: ./mine-data.db).
+  const persistence = new PersistenceLayer();
+
   // ─── Initialize Core Services ──────────────────────
   const permissions = new PermissionEngine();
   const vault = new DataVault(permissions);
@@ -29,19 +35,19 @@ async function main() {
       {
         name: 'claude',
         enabled: true,
-        priority: 1, // preferred — change to 2 to prefer OpenAI
+        priority: 1,
         models: {
-          fast: 'claude-haiku-4-5-20251001',  // cheap: email parsing, extraction, classification
-          smart: 'claude-sonnet-4-6',          // powerful: analysis, reasoning, complex queries
+          fast: 'claude-haiku-4-5-20251001',
+          smart: 'claude-sonnet-4-6',
         },
       },
       {
         name: 'openai',
         enabled: true,
-        priority: 2, // fallback — change to 1 to prefer OpenAI
+        priority: 2,
         models: {
-          fast: 'gpt-4o-mini',  // cheap: extraction, classification
-          smart: 'gpt-4o',      // powerful: analysis, reasoning
+          fast: 'gpt-4o-mini',
+          smart: 'gpt-4o',
         },
       },
     ],
@@ -51,6 +57,10 @@ async function main() {
   const integrations = new IntegrationGateway();
   const workflows = new WorkflowEngine();
   const marketplace = new AgentMarketplace();
+
+  // ─── Wire Persistence Into Services ─────────────────
+  vault.enablePersistence(persistence);
+  integrations.enablePersistence(persistence);
 
   // ─── Register Integrations & Adapters ──────────────
   const adapters = createAdapterRegistry();
@@ -68,6 +78,8 @@ async function main() {
 
   // ─── Initialize Agent System ───────────────────────
   const runtime = new AgentRuntime(permissions, vault, auditLog, aiEngine);
+  runtime.enablePersistence(persistence);
+
   const registry = new AgentRegistry();
   const router = new MessageRouter(runtime, aiEngine);
 
@@ -88,6 +100,7 @@ async function main() {
     integrations,
     workflows,
     marketplace,
+    persistence,
   });
 
   const port = parseInt(process.env.PORT || '3000', 10);

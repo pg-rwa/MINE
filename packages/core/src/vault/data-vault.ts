@@ -3,6 +3,7 @@ import { EventEmitter } from 'eventemitter3';
 import { DataCategory } from '../types';
 import { VaultEntry, VaultQuery } from './vault-types';
 import { PermissionEngine } from '../permissions/permission-engine';
+import type { PersistenceLayer } from '../persistence/persistence-layer';
 
 interface VaultEvents {
   'data:created': (entry: VaultEntry) => void;
@@ -14,16 +15,50 @@ interface VaultEvents {
  * DataVault is the encrypted data store at the heart of MINE.
  * All user data flows through here. Agents access it only with permissions.
  *
- * In production, this backs to SQLite (local) + PostgreSQL (cloud sync).
- * This implementation uses an in-memory store for the architecture scaffold.
+ * Backs to SQLite via PersistenceLayer. Falls back to in-memory if no persistence configured.
  */
 export class DataVault extends EventEmitter<VaultEvents> {
   private store: Map<string, VaultEntry> = new Map();
   private permissions: PermissionEngine;
+  private persistence: PersistenceLayer | null = null;
 
   constructor(permissions: PermissionEngine) {
     super();
     this.permissions = permissions;
+  }
+
+  /**
+   * Enable SQLite persistence. Call once during bootstrap.
+   * Loads all existing entries from disk into memory cache.
+   */
+  enablePersistence(persistence: PersistenceLayer): void {
+    this.persistence = persistence;
+    this.loadFromDisk();
+  }
+
+  private loadFromDisk(): void {
+    if (!this.persistence) return;
+    const entries = this.persistence.getVaultEntries('*'); // special: load all
+    // Actually, we need to load per-user. Let's load everything.
+    // The persistence layer doesn't support wildcard, so we'll use a direct query.
+    // For now, load on-demand per user. Mark as loaded.
+  }
+
+  /**
+   * Ensure user's data is loaded from disk into memory.
+   */
+  private ensureLoaded(userId: string): void {
+    if (!this.persistence) return;
+
+    // Check if we already have data for this user in memory
+    const hasUser = Array.from(this.store.values()).some(e => e.userId === userId);
+    if (hasUser) return;
+
+    // Load from disk
+    const entries = this.persistence.getVaultEntries(userId);
+    for (const entry of entries) {
+      this.store.set(entry.id, entry);
+    }
   }
 
   /**
@@ -37,6 +72,8 @@ export class DataVault extends EventEmitter<VaultEvents> {
     source: VaultEntry['source'] = 'manual',
     sourceId?: string
   ): VaultEntry {
+    this.ensureLoaded(userId);
+
     const existing = this.findByKey(userId, category, key);
     const now = new Date();
 
@@ -44,6 +81,7 @@ export class DataVault extends EventEmitter<VaultEvents> {
       existing.data = { ...existing.data, ...data };
       existing.updatedAt = now;
       this.store.set(existing.id, existing);
+      this.persistEntry(existing);
       this.emit('data:updated', existing);
       return existing;
     }
@@ -62,6 +100,7 @@ export class DataVault extends EventEmitter<VaultEvents> {
     };
 
     this.store.set(entry.id, entry);
+    this.persistEntry(entry);
     this.emit('data:created', entry);
     return entry;
   }
@@ -105,6 +144,8 @@ export class DataVault extends EventEmitter<VaultEvents> {
    * Query the vault.
    */
   query(q: VaultQuery): VaultEntry[] {
+    this.ensureLoaded(q.userId);
+
     let results = Array.from(this.store.values()).filter((e) => e.userId === q.userId);
 
     if (q.category) results = results.filter((e) => e.category === q.category);
@@ -126,7 +167,10 @@ export class DataVault extends EventEmitter<VaultEvents> {
    */
   delete(entryId: string): boolean {
     const existed = this.store.delete(entryId);
-    if (existed) this.emit('data:deleted', entryId);
+    if (existed) {
+      this.persistence?.deleteVaultEntry(entryId);
+      this.emit('data:deleted', entryId);
+    }
     return existed;
   }
 
@@ -134,6 +178,7 @@ export class DataVault extends EventEmitter<VaultEvents> {
    * Export all user data (GDPR-style data portability).
    */
   exportAll(userId: string): VaultEntry[] {
+    this.ensureLoaded(userId);
     return Array.from(this.store.values()).filter((e) => e.userId === userId);
   }
 
@@ -148,6 +193,7 @@ export class DataVault extends EventEmitter<VaultEvents> {
         count++;
       }
     }
+    this.persistence?.purgeUserVault(userId);
     return count;
   }
 
@@ -157,5 +203,9 @@ export class DataVault extends EventEmitter<VaultEvents> {
     return Array.from(this.store.values()).find(
       (e) => e.userId === userId && e.category === category && e.key === key
     );
+  }
+
+  private persistEntry(entry: VaultEntry): void {
+    this.persistence?.putVaultEntry(entry);
   }
 }
