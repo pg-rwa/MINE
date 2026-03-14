@@ -266,20 +266,43 @@ const App = {
 
     const messages = document.getElementById('chatMessages');
 
-    // Add user message
-    messages.innerHTML += `
-      <div class="message user">
-        <div class="message-avatar">P</div>
-        <div><div class="message-bubble">${esc(text)}</div></div>
-      </div>
+    // Add user message (use DOM methods to avoid destroying existing elements)
+    const userMsgDiv = document.createElement('div');
+    userMsgDiv.className = 'message user';
+    userMsgDiv.innerHTML = `
+      <div class="message-avatar">P</div>
+      <div><div class="message-bubble">${esc(text)}</div></div>
     `;
+    messages.appendChild(userMsgDiv);
     messages.scrollTop = messages.scrollHeight;
 
     // Show activity panel instead of simple "Thinking..."
     const typingId = 'typing-' + Date.now();
-    messages.innerHTML += `
-      <div class="message agent activity-message" id="${typingId}"></div>
+    const agentLabel = this.chatAgentId
+      ? this.chatAgentId.charAt(0).toUpperCase() + this.chatAgentId.slice(1)
+      : null;
+    const initialStage = agentLabel ? `Routing to ${agentLabel} agent...` : 'Analyzing request & routing...';
+
+    const activityDiv = document.createElement('div');
+    activityDiv.className = 'message agent activity-message';
+    activityDiv.id = typingId;
+    activityDiv.innerHTML = `
+      <div class="message-avatar">
+        <div class="activity-pulse"></div>
+      </div>
+      <div style="flex:1">
+        <div class="activity-panel">
+          <div class="activity-header">
+            <span class="activity-status">${initialStage}</span>
+            <span class="activity-timer">0s</span>
+          </div>
+          <div class="activity-bar">
+            <div class="activity-bar-fill"></div>
+          </div>
+        </div>
+      </div>
     `;
+    messages.appendChild(activityDiv);
     messages.scrollTop = messages.scrollHeight;
     this._startActivity(typingId);
 
@@ -331,19 +354,20 @@ const App = {
       // Format content with newlines
       const formattedContent = esc(response.content).replace(/\n/g, '<br/>');
 
-      messages.innerHTML += `
-        <div class="message agent">
-          <div class="message-avatar">${emojiStr}</div>
-          <div>
-            <div class="message-bubble">
-              <strong style="font-size:11px;color:var(--text-dim);display:block;margin-bottom:4px">${esc(response.agentId)}</strong>
-              ${formattedContent}
-              ${actionsHtml}
-            </div>
-            ${suggestionsHtml}
+      const responseDiv = document.createElement('div');
+      responseDiv.className = 'message agent';
+      responseDiv.innerHTML = `
+        <div class="message-avatar">${emojiStr}</div>
+        <div>
+          <div class="message-bubble">
+            <strong style="font-size:11px;color:var(--text-dim);display:block;margin-bottom:4px">${esc(response.agentId)}</strong>
+            ${formattedContent}
+            ${actionsHtml}
           </div>
+          ${suggestionsHtml}
         </div>
       `;
+      messages.appendChild(responseDiv);
 
       // Refresh sidebar to show new conversation
       this.refreshConversationSidebar();
@@ -353,21 +377,22 @@ const App = {
       document.getElementById(typingId)?.remove();
 
       // Show detailed error panel
-      messages.innerHTML += `
-        <div class="message agent">
-          <div class="message-avatar" style="background:var(--red-bg);color:var(--red)">!</div>
-          <div>
-            <div class="message-bubble error-bubble">
-              <div class="error-header">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--red)" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-                <strong>Agent Error</strong>
-              </div>
-              <div class="error-detail">${esc(err.message)}</div>
-              <div class="error-hint">This could mean the agent couldn't complete the task. Try rephrasing your request or check if the required permissions/integrations are set up.</div>
+      const errorDiv = document.createElement('div');
+      errorDiv.className = 'message agent';
+      errorDiv.innerHTML = `
+        <div class="message-avatar" style="background:var(--red-bg);color:var(--red)">!</div>
+        <div>
+          <div class="message-bubble error-bubble">
+            <div class="error-header">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--red)" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+              <strong>Agent Error</strong>
             </div>
+            <div class="error-detail">${esc(err.message)}</div>
+            <div class="error-hint">This could mean the agent couldn't complete the task. Try rephrasing your request or check if the required permissions/integrations are set up.</div>
           </div>
         </div>
       `;
+      messages.appendChild(errorDiv);
     }
 
     // Re-enable send button
