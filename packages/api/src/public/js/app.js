@@ -123,10 +123,11 @@ const App = {
 
   selectChatAgent(agentId, el) {
     this.chatAgentId = agentId;
+    this.conversationId = null;
     document.querySelectorAll('.chat-agent-select .agent-chip').forEach(c => c.classList.remove('active'));
     el.classList.add('active');
-    // Reload conversations for this agent
-    this.refreshConversationSidebar();
+    // Reload entire chat view (sidebar + messages) for this agent
+    this.navigate('chat');
   },
 
   async refreshConversationSidebar() {
