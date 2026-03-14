@@ -52,9 +52,25 @@ export async function createApp(ctx: AppContext) {
 
   // Decorate request with user context (simplified — production uses JWT)
   app.decorateRequest('userId', '');
+  const restoredUsers = new Set<string>();
   app.addHook('onRequest', async (request) => {
     // In production: verify JWT, extract userId
-    (request as any).userId = request.headers['x-user-id'] as string || 'demo-user';
+    const userId = request.headers['x-user-id'] as string || 'demo-user';
+    (request as any).userId = userId;
+
+    // Lazily restore installed agents on first request per user.
+    // This ensures agents survive redeployments regardless of which userId is used.
+    if (!restoredUsers.has(userId)) {
+      restoredUsers.add(userId);
+      try {
+        const count = await ctx.runtime.restoreAgents(userId, ctx.registry);
+        if (count > 0) {
+          request.log.info(`Restored ${count} agent(s) for user ${userId}`);
+        }
+      } catch (err) {
+        request.log.warn(`Failed to restore agents for user ${userId}: ${err}`);
+      }
+    }
   });
 
   // Register route modules

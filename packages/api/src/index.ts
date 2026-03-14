@@ -86,14 +86,8 @@ async function main() {
   // Register all built-in agents
   registerBuiltInAgents(registry);
 
-  // ─── Restore Previously Installed Agents ────────────
-  // On restart/redeployment, restore agents the user had installed.
-  // Uses a default userId — in multi-user mode this would iterate all users.
-  const defaultUserId = process.env.DEFAULT_USER_ID || 'user-1';
-  const restoredCount = await runtime.restoreAgents(defaultUserId, registry);
-  if (restoredCount > 0) {
-    console.log(`Restored ${restoredCount} previously installed agent(s)`);
-  }
+  // Agent restoration happens lazily in app.ts on first request per user.
+  // This ensures the correct userId (from x-user-id header) is used.
 
   // ─── Create API Server ─────────────────────────────
   const app = await createApp({
