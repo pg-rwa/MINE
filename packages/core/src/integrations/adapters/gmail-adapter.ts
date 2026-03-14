@@ -100,16 +100,25 @@ export class GmailAdapter implements IntegrationAdapter {
   }
 
   async fetchData(tokens: OAuthTokens, options?: FetchOptions): Promise<NormalizedEntry[]> {
-    const entries: NormalizedEntry[] = [];
-
     // Fetch recent emails
     const query = this.buildSearchQuery(options);
     const messages = await this.listMessages(tokens.accessToken, query, options?.limit || 50);
 
-    for (const msgRef of messages) {
-      const msg = await this.getMessage(tokens.accessToken, msgRef.id);
-      const parsed = this.parseEmail(msg);
-      if (parsed) entries.push(parsed);
+    // Fetch message details in parallel batches of 10 to avoid rate limits
+    const batchSize = 10;
+    const entries: NormalizedEntry[] = [];
+
+    for (let i = 0; i < messages.length; i += batchSize) {
+      const batch = messages.slice(i, i + batchSize);
+      const results = await Promise.all(
+        batch.map(async (msgRef) => {
+          const msg = await this.getMessage(tokens.accessToken, msgRef.id);
+          return this.parseEmail(msg);
+        })
+      );
+      for (const parsed of results) {
+        if (parsed) entries.push(parsed);
+      }
     }
 
     return entries;

@@ -218,6 +218,11 @@ export function integrationRoutes(ctx: AppContext): FastifyPluginCallback {
         connectedAt: new Date().toISOString(),
       });
 
+      // Trigger initial sync in the background (same as real OAuth callback)
+      ctx.integrations.sync(connection.id).catch(err => {
+        console.error(`Initial sync failed for ${integrationId}:`, err.message);
+      });
+
       return { success: true, connection: { id: connection.id, status: connection.status } };
     });
 
