@@ -41,15 +41,40 @@ export class FinanceAgent extends BaseAgent {
     if (content.includes('add') && (content.includes('expense') || content.includes('spent'))) return this.handleAddExpense(message, context);
     if (content.includes('add') && (content.includes('income') || content.includes('salary'))) return this.handleAddIncome(message, context);
 
+    // Analyze intent early so we can detect cross-agent needs
+    const intent = this.analyzeIntent(message, context);
+
+    // If cross-agent data is needed, delegate first and include the result
+    let delegatedContext = '';
+    if (intent.dataSources.length > 0 || intent.crossAgentRefs.length > 0) {
+      const activeAgents = context.listActiveAgents();
+      const sources = [...new Set([...intent.dataSources, ...intent.crossAgentRefs])];
+      for (const source of sources) {
+        const sourceAgent = activeAgents.find(
+          a => a.id === source || a.description.toLowerCase().includes(source)
+        );
+        if (sourceAgent && sourceAgent.id !== this.manifest.id) {
+          const result = await this.delegateToAgent(
+            sourceAgent.id,
+            `Find data related to: ${intent.primaryTopic}. Show any transactions, EMIs, bills, or statements.`,
+            context
+          );
+          if (result) {
+            delegatedContext += `\n\n[Data from ${sourceAgent.name}]:\n${result.content}`;
+          }
+        }
+      }
+    }
+
     // For everything else — use AI with user's financial data as context
     const vaultData = this.getVaultDataSummary(context, ['emis', 'expenses', 'income']);
-    const aiResponse = await this.generateAIResponse(message, context, vaultData || undefined);
+    const fullContext = [vaultData, delegatedContext].filter(Boolean).join('\n\n') || undefined;
+    const aiResponse = await this.generateAIResponse(message, context, fullContext);
     if (aiResponse) {
       return this.respond(aiResponse, { suggestions: this.getSuggestionsFor(content) });
     }
 
     // Fallback when AI unavailable — use pattern matching
-    const intent = this.analyzeIntent(message, context);
     if (content.includes('expense') || content.includes('spent') || content.includes('spending')) return this.handleViewExpenses(message, context, intent);
     if (content.includes('emi') || content.includes('loan') || content.includes('installment')) return this.handleViewEMIs(message, context, intent);
     if (content.includes('income') || content.includes('salary')) return this.handleViewIncome(message, context, intent);
@@ -375,14 +400,13 @@ export class FinanceAgent extends BaseAgent {
     });
   }
 
-  private async handleGenericFinanceQuery(_message: Message, context: AgentContext, intent: ReturnType<typeof this.analyzeIntent>): Promise<AgentResponse> {
-    // If the user asked something that doesn't match our keywords but we can still be helpful
-    const crossNote = this.getCrossAgentContext(intent, context);
-
-    if (crossNote) {
-      // User is asking about something that involves other agents
-      return this.respond(
-        `${crossNote}\n\nAs your Finance Manager, I can help with EMIs, expenses, income, budgets, and net worth tracking. What would you like to do?`,
+  private async handleGenericFinanceQuery(message: Message, context: AgentContext, intent: ReturnType<typeof this.analyzeIntent>): Promise<AgentResponse> {
+    // If the user's request involves other agents' data, delegate automatically
+    if (intent.dataSources.length > 0 || intent.crossAgentRefs.length > 0) {
+      return this.resolveWithDelegation(
+        intent,
+        context,
+        "Here's what I have on my end. Let me know if you'd like to add or update anything.",
         { suggestions: ['Show my EMIs', 'Add an expense', 'Monthly summary', 'Add income'] }
       );
     }

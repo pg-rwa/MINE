@@ -58,8 +58,12 @@ export class EmailAgent extends BaseAgent {
       });
     }
 
-    // Cross-domain search
+    // Cross-domain search — delegate to other agents if needed
     if (intent.crossAgentRefs.length > 0 || this.isTopicSearch(content)) {
+      // If cross-agent data is needed, use delegation instead of just searching locally
+      if (intent.dataSources.length > 0 || intent.crossAgentRefs.length > 0) {
+        return this.handleTopicSearchWithDelegation(message, context, intent);
+      }
       return this.handleTopicSearch(message, context, intent);
     }
 
@@ -280,6 +284,49 @@ Use markdown formatting. Keep it under 200 words.`,
     return this.respond(responseText, {
       suggestions: ['Search for more', 'Summarize inbox', 'Show all transactions'],
     });
+  }
+
+  // ─── Topic Search with Delegation ───────────────────
+
+  private async handleTopicSearchWithDelegation(
+    message: Message,
+    context: AgentContext,
+    intent: ReturnType<typeof this.analyzeIntent>
+  ): Promise<AgentResponse> {
+    // First, get our own email data
+    const localResult = this.handleTopicSearch(message, context, intent);
+
+    // Then delegate to other agents for their domain data
+    const activeAgents = context.listActiveAgents();
+    const delegationResults: string[] = [];
+    const sources = [...new Set([...intent.dataSources, ...intent.crossAgentRefs])];
+
+    for (const source of sources) {
+      const sourceAgent = activeAgents.find(
+        a => a.id === source || a.description.toLowerCase().includes(source)
+      );
+      if (sourceAgent && sourceAgent.id !== this.manifest.id) {
+        const result = await this.delegateToAgent(
+          sourceAgent.id,
+          `Show data related to: ${intent.primaryTopic}`,
+          context
+        );
+        if (result) {
+          delegationResults.push(`**From ${sourceAgent.name}:**\n${result.content}`);
+        }
+      }
+    }
+
+    if (delegationResults.length > 0) {
+      return this.respond(
+        `${localResult.content}\n\n---\n\n${delegationResults.join('\n\n')}`,
+        {
+          suggestions: localResult.suggestions,
+        }
+      );
+    }
+
+    return localResult;
   }
 
   // ─── Insights ────────────────────────────────────────

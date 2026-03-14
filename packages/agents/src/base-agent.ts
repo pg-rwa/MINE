@@ -104,14 +104,15 @@ ${capabilities}
 Guidelines:
 - Be concise but helpful. Keep responses under 150 words.
 - Directly address what the user is asking. Don't give generic introductions.
-- If the user asks something outside your domain, acknowledge it and suggest which other agent can help.
+- If the user asks something that needs data from another agent's domain, DO NOT tell the user to "go ask" that agent. Instead, coordinate with the other agent directly — you have inter-agent communication. The user should never be a middleman between agents.
 - Use markdown formatting sparingly (bold for key info, numbered lists for data).
 - Be conversational and friendly, not robotic.
 - If you can take action (like tracking a price, logging an expense, etc.), tell the user you're doing it.
-- Never say "I'm just an AI" or "I can't actually do that" — you ARE the agent, act like it.`;
+- Never say "I'm just an AI" or "I can't actually do that" — you ARE the agent, act like it.
+- When you receive data from another agent via delegation, incorporate it naturally into your response. Present a unified answer, not separate agent outputs.`;
 
     if (activeAgents) {
-      prompt += `\n\nOther active agents the user has installed:\n${activeAgents}\nYou can suggest these agents when queries fall outside your domain.`;
+      prompt += `\n\nOther active agents (you can delegate to them automatically — never ask the user to relay messages):\n${activeAgents}`;
     }
 
     if (extraContext) {
@@ -148,6 +149,108 @@ Guidelines:
 
   protected analyzeIntent(message: Message, context: AgentContext): UserIntent {
     return context.aiEngine.analyzeIntent(message.content);
+  }
+
+  /**
+   * Delegate a task to another agent and get its response.
+   * This enables true inter-agent communication — agents talk to each other
+   * instead of asking the user to relay messages.
+   *
+   * @param targetAgentId - The agent to delegate to (e.g., 'email', 'finance')
+   * @param request - Natural language request for the target agent
+   * @param context - Current agent context
+   * @returns The target agent's response, or null if delegation failed
+   */
+  protected async delegateToAgent(
+    targetAgentId: string,
+    request: string,
+    context: AgentContext
+  ): Promise<AgentResponse | null> {
+    try {
+      const result = await context.sendToAgent(targetAgentId, request);
+      if (result) {
+        // Store the delegation result in shared memory so other agents can also benefit
+        context.remember(
+          `delegation_${targetAgentId}_${Date.now()}`,
+          { from: this.manifest.id, to: targetAgentId, request, summary: result.content.slice(0, 300) },
+          'cross_ref'
+        );
+      }
+      return result;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Automatically resolve cross-agent data needs.
+   * Instead of telling the user "go ask Email Manager", this method
+   * actually delegates to the other agent and incorporates the result.
+   */
+  protected async resolveWithDelegation(
+    intent: UserIntent,
+    context: AgentContext,
+    mainContent: string,
+    options?: Partial<Omit<AgentResponse, 'agentId' | 'timestamp'>>
+  ): Promise<AgentResponse> {
+    const activeAgents = context.listActiveAgents();
+    const delegationResults: string[] = [];
+
+    // For each data source that maps to another agent, delegate to it
+    for (const source of intent.dataSources) {
+      const sourceAgent = activeAgents.find(
+        a => a.id === source || a.description.toLowerCase().includes(source)
+      );
+      if (sourceAgent && sourceAgent.id !== this.manifest.id) {
+        const delegateRequest = this.buildDelegationRequest(intent, source);
+        const result = await this.delegateToAgent(sourceAgent.id, delegateRequest, context);
+        if (result) {
+          delegationResults.push(`**Data from ${sourceAgent.name}:**\n${result.content}`);
+        }
+      }
+    }
+
+    // For cross-agent references, also try delegation
+    for (const ref of intent.crossAgentRefs) {
+      if (intent.dataSources.includes(ref)) continue; // Already handled
+      const refAgent = activeAgents.find(a => a.id === ref);
+      if (refAgent && refAgent.id !== this.manifest.id) {
+        const delegateRequest = this.buildDelegationRequest(intent, ref);
+        const result = await this.delegateToAgent(refAgent.id, delegateRequest, context);
+        if (result) {
+          delegationResults.push(`**Data from ${refAgent.name}:**\n${result.content}`);
+        }
+      }
+    }
+
+    let content = mainContent;
+    if (delegationResults.length > 0) {
+      content = `${delegationResults.join('\n\n')}\n\n---\n\n${mainContent}`;
+    }
+
+    return {
+      agentId: this.manifest.id,
+      content,
+      actions: options?.actions ?? [],
+      suggestions: options?.suggestions ?? [],
+      timestamp: new Date(),
+    };
+  }
+
+  /**
+   * Build a natural language delegation request based on the intent and data source.
+   */
+  private buildDelegationRequest(intent: UserIntent, source: string): string {
+    const topic = intent.primaryTopic;
+    const action = intent.primaryAction;
+
+    if (source === 'email') {
+      return `Search emails for anything related to: ${topic}. Show transactions, bills, or statements if found.`;
+    }
+    if (source === 'finance') {
+      return `Show financial data related to: ${topic}. Include expenses, EMIs, or income if relevant.`;
+    }
+    return `${action || 'Find'} data related to: ${topic}`;
   }
 
   protected getCrossAgentContext(intent: UserIntent, context: AgentContext): string | null {
