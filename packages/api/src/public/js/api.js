@@ -36,11 +36,16 @@ const API = {
   },
 
   // Chat history
-  getConversations(limit = 50) {
-    return this.get(`/api/chat/conversations?limit=${limit}`);
+  getConversations(limit = 50, agentId = null) {
+    let url = `/api/chat/conversations?limit=${limit}`;
+    if (agentId) url += `&agentId=${encodeURIComponent(agentId)}`;
+    return this.get(url);
   },
   getConversationMessages(conversationId, limit = 100) {
     return this.get(`/api/chat/conversations/${conversationId}?limit=${limit}`);
+  },
+  deleteConversation(conversationId) {
+    return this.del(`/api/chat/conversations/${conversationId}`);
   },
 
   // Permissions

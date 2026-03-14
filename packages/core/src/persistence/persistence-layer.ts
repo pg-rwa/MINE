@@ -247,13 +247,18 @@ export class PersistenceLayer {
     );
   }
 
-  getConversations(userId: string, limit = 50, offset = 0): any[] {
-    return this.db.prepare(`
-      SELECT * FROM conversations
-      WHERE user_id = ?
-      ORDER BY last_message_at DESC
-      LIMIT ? OFFSET ?
-    `).all(userId, limit, offset).map(row => ({
+  getConversations(userId: string, limit = 50, offset = 0, agentId?: string): any[] {
+    let sql = 'SELECT * FROM conversations WHERE user_id = ?';
+    const params: any[] = [userId];
+
+    if (agentId) {
+      sql += ' AND agent_id = ?';
+      params.push(agentId);
+    }
+    sql += ' ORDER BY last_message_at DESC LIMIT ? OFFSET ?';
+    params.push(limit, offset);
+
+    return this.db.prepare(sql).all(...params).map(row => ({
       id: (row as any).id,
       userId: (row as any).user_id,
       title: (row as any).title,

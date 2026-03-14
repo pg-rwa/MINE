@@ -440,6 +440,11 @@ body {
 .conversation-item:hover { background: var(--bg-card-hover); }
 .conversation-item.active { background: var(--accent-glow); border-left: 3px solid var(--accent); }
 
+.conversation-item-content {
+  flex: 1;
+  min-width: 0;
+}
+
 .conversation-title {
   font-size: 12px;
   font-weight: 500;
@@ -452,6 +457,33 @@ body {
   font-size: 10px;
   color: var(--text-dim);
   margin-top: 2px;
+}
+
+.conversation-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.conversation-delete {
+  display: none;
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 4px;
+  flex-shrink: 0;
+  transition: all var(--transition);
+}
+
+.conversation-delete:hover {
+  color: var(--red);
+  background: var(--red-bg);
+}
+
+.conversation-item:hover .conversation-delete {
+  display: flex;
 }
 
 @media (max-width: 768px) {
@@ -752,6 +784,118 @@ body {
 }
 
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* ─── Activity Panel ────────────────────────── */
+.activity-message {
+  max-width: 95% !important;
+}
+
+.activity-panel {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px 16px;
+  min-width: 280px;
+}
+
+.activity-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.activity-status {
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.activity-timer {
+  font-size: 11px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  background: var(--bg);
+  padding: 2px 8px;
+  border-radius: 100px;
+  border: 1px solid var(--border);
+}
+
+.activity-bar {
+  height: 3px;
+  background: var(--border);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.activity-bar-fill {
+  height: 100%;
+  width: 40%;
+  background: var(--accent);
+  border-radius: 2px;
+  animation: activity-slide 1.5s ease-in-out infinite;
+}
+
+.activity-bar-fill.slow {
+  background: var(--orange);
+  animation-duration: 2.5s;
+}
+
+@keyframes activity-slide {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(350%); }
+}
+
+.activity-pulse {
+  width: 10px;
+  height: 10px;
+  background: var(--accent);
+  border-radius: 50%;
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 0.4; transform: scale(0.8); }
+  50% { opacity: 1; transform: scale(1.2); }
+}
+
+.activity-hint {
+  font-size: 11px;
+  color: var(--orange);
+  margin-top: 8px;
+  line-height: 1.4;
+}
+
+/* ─── Error Bubble ──────────────────────────── */
+.error-bubble {
+  border-color: var(--red) !important;
+  background: var(--bg-card) !important;
+}
+
+.error-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--red);
+  font-size: 13px;
+  margin-bottom: 8px;
+}
+
+.error-detail {
+  font-size: 13px;
+  color: var(--text);
+  padding: 8px 12px;
+  background: var(--red-bg);
+  border-radius: var(--radius-sm);
+  margin-bottom: 8px;
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.error-hint {
+  font-size: 11px;
+  color: var(--text-dim);
+  line-height: 1.4;
+}
 
 /* ─── Responsive ────────────────────────────── */
 @media (max-width: 768px) {

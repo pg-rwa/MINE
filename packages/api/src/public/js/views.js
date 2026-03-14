@@ -117,7 +117,7 @@ const Views = {
   async chat() {
     const [installed, conversations] = await Promise.all([
       API.getInstalledAgents(),
-      API.getConversations(20).catch(() => []),
+      API.getConversations(20, App.chatAgentId).catch(() => []),
     ]);
     const active = installed.filter(a => a.active);
 
@@ -163,11 +163,16 @@ const Views = {
       } catch { /* ignore load error */ }
     }
 
-    // Build conversation sidebar
+    // Build conversation sidebar with delete buttons
     const convListHtml = conversations.length > 0 ? conversations.map(c => `
       <div class="conversation-item ${c.id === App.conversationId ? 'active' : ''}" onclick="App.loadConversation('${c.id}')">
-        <div class="conversation-title">${esc(c.title || 'Untitled')}</div>
-        <div class="conversation-meta">${new Date(c.lastMessageAt || c.createdAt).toLocaleDateString()}</div>
+        <div class="conversation-item-content">
+          <div class="conversation-title">${esc(c.title || 'Untitled')}</div>
+          <div class="conversation-meta">${new Date(c.lastMessageAt || c.createdAt).toLocaleDateString()}</div>
+        </div>
+        <button class="conversation-delete" onclick="event.stopPropagation(); App.deleteConversation('${c.id}')" title="Delete conversation">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3,6 5,6 21,6"/><path d="M19,6v14a2,2,0,0,1-2,2H7a2,2,0,0,1-2-2V6m3,0V4a2,2,0,0,1,2-2h4a2,2,0,0,1,2,2v2"/></svg>
+        </button>
       </div>
     `).join('') : '<div style="padding:12px;color:var(--text-muted);font-size:12px">No conversations yet</div>';
 
@@ -184,6 +189,9 @@ const Views = {
       </div>
     ` : '';
 
+    // Determine which agent chip should be active
+    const activeAgentId = App.chatAgentId || '';
+
     return `
       <div class="chat-layout">
         <div class="chat-sidebar">
@@ -195,9 +203,9 @@ const Views = {
         </div>
         <div class="chat-container">
           <div class="chat-agent-select">
-            <span class="agent-chip active" data-agent="" onclick="App.selectChatAgent(null, this)">Auto-route</span>
+            <span class="agent-chip ${activeAgentId === '' ? 'active' : ''}" data-agent="" onclick="App.selectChatAgent(null, this)">All Chats</span>
             ${active.map(a => `
-              <span class="agent-chip" data-agent="${a.manifest.id}" onclick="App.selectChatAgent('${a.manifest.id}', this)">
+              <span class="agent-chip ${activeAgentId === a.manifest.id ? 'active' : ''}" data-agent="${a.manifest.id}" onclick="App.selectChatAgent('${a.manifest.id}', this)">
                 ${esc(a.manifest.name)}
               </span>
             `).join('')}

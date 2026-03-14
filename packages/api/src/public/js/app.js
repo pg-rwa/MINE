@@ -5,6 +5,7 @@ const App = {
   currentView: 'dashboard',
   chatAgentId: null,
   conversationId: null,
+  _activityTimer: null,
 
   async init() {
     // Set up navigation
@@ -124,6 +125,32 @@ const App = {
     this.chatAgentId = agentId;
     document.querySelectorAll('.chat-agent-select .agent-chip').forEach(c => c.classList.remove('active'));
     el.classList.add('active');
+    // Reload conversations for this agent
+    this.refreshConversationSidebar();
+  },
+
+  async refreshConversationSidebar() {
+    try {
+      const conversations = await API.getConversations(20, this.chatAgentId);
+      const listEl = document.querySelector('.chat-sidebar-list');
+      if (!listEl) return;
+
+      if (conversations.length === 0) {
+        listEl.innerHTML = '<div style="padding:12px;color:var(--text-muted);font-size:12px">No conversations yet</div>';
+      } else {
+        listEl.innerHTML = conversations.map(c => `
+          <div class="conversation-item ${c.id === this.conversationId ? 'active' : ''}" onclick="App.loadConversation('${c.id}')">
+            <div class="conversation-item-content">
+              <div class="conversation-title">${esc(c.title || 'Untitled')}</div>
+              <div class="conversation-meta">${new Date(c.lastMessageAt || c.createdAt).toLocaleDateString()}</div>
+            </div>
+            <button class="conversation-delete" onclick="event.stopPropagation(); App.deleteConversation('${c.id}')" title="Delete conversation">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3,6 5,6 21,6"/><path d="M19,6v14a2,2,0,0,1-2,2H7a2,2,0,0,1-2-2V6m3,0V4a2,2,0,0,1,2-2h4a2,2,0,0,1,2,2v2"/></svg>
+            </button>
+          </div>
+        `).join('');
+      }
+    } catch { /* ignore */ }
   },
 
   async loadConversation(conversationId) {
@@ -141,12 +168,101 @@ const App = {
     await this.navigate('chat');
   },
 
+  async deleteConversation(conversationId) {
+    if (!confirm('Delete this conversation?')) return;
+    try {
+      await API.deleteConversation(conversationId);
+      // If we deleted the active conversation, clear it
+      if (this.conversationId === conversationId) {
+        this.conversationId = null;
+      }
+      await this.navigate('chat');
+    } catch (err) {
+      alert('Failed to delete: ' + err.message);
+    }
+  },
+
+  // ─── Activity Panel ─────────────────────────────
+
+  _startActivity(typingId) {
+    const startTime = Date.now();
+    const agentName = this.chatAgentId
+      ? this.chatAgentId.charAt(0).toUpperCase() + this.chatAgentId.slice(1)
+      : null;
+
+    const stages = [
+      { text: agentName ? `Routing to ${agentName} agent...` : 'Analyzing request & routing...', delay: 0 },
+      { text: agentName ? `${agentName} agent is processing...` : 'Agent is processing your request...', delay: 2000 },
+      { text: 'Waiting for AI response...', delay: 6000 },
+      { text: 'Still working... complex requests take longer.', delay: 15000 },
+      { text: 'This is taking a while. The agent may be stuck or waiting for external data.', delay: 30000 },
+    ];
+
+    const updateActivity = () => {
+      const el = document.getElementById(typingId);
+      if (!el) {
+        clearInterval(this._activityTimer);
+        return;
+      }
+
+      const elapsed = Date.now() - startTime;
+      const elapsedSec = Math.floor(elapsed / 1000);
+
+      // Find current stage
+      let currentStage = stages[0];
+      for (const stage of stages) {
+        if (elapsed >= stage.delay) currentStage = stage;
+      }
+
+      const timeStr = elapsedSec < 60
+        ? `${elapsedSec}s`
+        : `${Math.floor(elapsedSec / 60)}m ${elapsedSec % 60}s`;
+
+      const isLong = elapsed > 15000;
+
+      el.innerHTML = `
+        <div class="message-avatar" style="${isLong ? 'background:var(--orange-bg);color:var(--orange)' : ''}">
+          <div class="activity-pulse"></div>
+        </div>
+        <div style="flex:1">
+          <div class="activity-panel">
+            <div class="activity-header">
+              <span class="activity-status">${currentStage.text}</span>
+              <span class="activity-timer">${timeStr}</span>
+            </div>
+            <div class="activity-bar">
+              <div class="activity-bar-fill ${isLong ? 'slow' : ''}"></div>
+            </div>
+            ${isLong ? '<div class="activity-hint">If the agent seems stuck, try a simpler request or check if external services are accessible.</div>' : ''}
+          </div>
+        </div>
+      `;
+    };
+
+    updateActivity();
+    this._activityTimer = setInterval(updateActivity, 1000);
+  },
+
+  _stopActivity() {
+    if (this._activityTimer) {
+      clearInterval(this._activityTimer);
+      this._activityTimer = null;
+    }
+  },
+
   async sendChat() {
     const input = document.getElementById('chatInput');
     const text = input.value.trim();
     if (!text) return;
 
     input.value = '';
+
+    // Disable send while processing
+    const sendBtn = document.querySelector('.chat-send');
+    if (sendBtn) {
+      sendBtn.disabled = true;
+      sendBtn.textContent = 'Working...';
+    }
 
     const messages = document.getElementById('chatMessages');
 
@@ -159,25 +275,25 @@ const App = {
     `;
     messages.scrollTop = messages.scrollHeight;
 
-    // Show typing indicator
+    // Show activity panel instead of simple "Thinking..."
     const typingId = 'typing-' + Date.now();
     messages.innerHTML += `
-      <div class="message agent" id="${typingId}">
-        <div class="message-avatar">M</div>
-        <div><div class="message-bubble" style="color:var(--text-muted)">Thinking...</div></div>
-      </div>
+      <div class="message agent activity-message" id="${typingId}"></div>
     `;
     messages.scrollTop = messages.scrollHeight;
+    this._startActivity(typingId);
 
     try {
       const response = await API.sendMessage(text, this.chatAgentId, this.conversationId);
+
+      this._stopActivity();
 
       // Track conversationId so subsequent messages go to the same conversation
       if (response.conversationId) {
         this.conversationId = response.conversationId;
       }
 
-      // Remove typing indicator
+      // Remove activity panel
       document.getElementById(typingId)?.remove();
 
       // Add agent response
@@ -228,14 +344,36 @@ const App = {
           </div>
         </div>
       `;
+
+      // Refresh sidebar to show new conversation
+      this.refreshConversationSidebar();
+
     } catch (err) {
+      this._stopActivity();
       document.getElementById(typingId)?.remove();
+
+      // Show detailed error panel
       messages.innerHTML += `
         <div class="message agent">
-          <div class="message-avatar">!</div>
-          <div><div class="message-bubble" style="border-color:var(--red)">Error: ${esc(err.message)}</div></div>
+          <div class="message-avatar" style="background:var(--red-bg);color:var(--red)">!</div>
+          <div>
+            <div class="message-bubble error-bubble">
+              <div class="error-header">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--red)" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+                <strong>Agent Error</strong>
+              </div>
+              <div class="error-detail">${esc(err.message)}</div>
+              <div class="error-hint">This could mean the agent couldn't complete the task. Try rephrasing your request or check if the required permissions/integrations are set up.</div>
+            </div>
+          </div>
         </div>
       `;
+    }
+
+    // Re-enable send button
+    if (sendBtn) {
+      sendBtn.disabled = false;
+      sendBtn.textContent = 'Send';
     }
 
     messages.scrollTop = messages.scrollHeight;
