@@ -74,9 +74,14 @@ describe('IntegrationGateway', () => {
 
       gateway.disconnect(conn.id);
 
+      // listConnections excludes disconnected entries
       const connections = gateway.listConnections(userId);
-      expect(connections[0].status).toBe('disconnected');
-      expect(connections[0].credentials).toEqual({});
+      expect(connections).toHaveLength(0);
+
+      // But the connection itself is marked disconnected with wiped credentials
+      const raw = gateway.getConnection(conn.id);
+      expect(raw!.status).toBe('disconnected');
+      expect(raw!.credentials).toEqual({});
     });
   });
 
