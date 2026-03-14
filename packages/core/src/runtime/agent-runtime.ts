@@ -6,6 +6,7 @@ import { AuditLog } from '../audit/audit-log';
 import { AIEngine } from '../ai/ai-engine';
 import type { PersistenceLayer } from '../persistence/persistence-layer';
 import type { ActivityBus } from '../activity/activity-bus';
+import type { IntegrationGateway } from '../integrations/integration-gateway';
 
 /**
  * The interface every agent must implement.
@@ -75,6 +76,9 @@ export interface AgentContext {
 
   /** Get recent conversation history with this agent */
   getRecentHistory(limit?: number): Array<{ role: string; content: string }>;
+
+  /** Check if an integration is connected for this user */
+  checkIntegration(integrationId: string): { connected: boolean; status?: string; lastSync?: Date };
 }
 
 interface RuntimeEvents {
@@ -97,6 +101,7 @@ export class AgentRuntime extends EventEmitter<RuntimeEvents> {
   private aiEngine: AIEngine;
   private persistence: PersistenceLayer | null = null;
   private activity: ActivityBus | null = null;
+  private integrations: IntegrationGateway | null = null;
 
   constructor(permissions: PermissionEngine, vault: DataVault, auditLog: AuditLog, aiEngine?: AIEngine) {
     super();
@@ -111,6 +116,13 @@ export class AgentRuntime extends EventEmitter<RuntimeEvents> {
    */
   enablePersistence(persistence: PersistenceLayer): void {
     this.persistence = persistence;
+  }
+
+  /**
+   * Attach integration gateway so agents can check connection status.
+   */
+  setIntegrationGateway(gateway: IntegrationGateway): void {
+    this.integrations = gateway;
   }
 
   /**
@@ -422,6 +434,17 @@ export class AgentRuntime extends EventEmitter<RuntimeEvents> {
       getRecentHistory: (limit = 10) => {
         if (!persistence) return [];
         return persistence.getRecentAgentContext(userId, agentId, limit);
+      },
+
+      checkIntegration: (integrationId: string) => {
+        if (!this.integrations) return { connected: false };
+        const conn = this.integrations.findUserConnection(userId, integrationId);
+        if (!conn) return { connected: false };
+        return {
+          connected: conn.status === 'connected' || conn.status === 'syncing',
+          status: conn.status,
+          lastSync: conn.lastSync,
+        };
       },
     };
   }

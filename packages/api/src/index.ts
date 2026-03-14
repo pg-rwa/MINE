@@ -84,6 +84,7 @@ async function main() {
   const runtime = new AgentRuntime(permissions, vault, auditLog, aiEngine);
   runtime.enablePersistence(persistence);
   runtime.setActivityBus(activityBus);
+  runtime.setIntegrationGateway(integrations);
 
   const registry = new AgentRegistry();
   const router = new MessageRouter(runtime, aiEngine);

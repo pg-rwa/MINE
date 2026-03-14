@@ -76,6 +76,14 @@ export class EmailAgent extends BaseAgent {
       });
     }
 
+    const gmail = context.checkIntegration('gmail');
+    if (gmail.connected) {
+      return this.respondWithContext(intent, context,
+        "I help manage your email — summaries, transaction tracking, order updates, and more.\n\n" +
+        "Gmail is connected. Try asking me about transactions, orders, or bills!", {
+          suggestions: ['Summarize inbox', 'Show transactions', 'Show orders', 'Check bills'],
+        });
+    }
     return this.respondWithContext(intent, context,
       "I help manage your email — summaries, transaction tracking, order updates, and more.\n\n" +
       "Connect Gmail first via **Settings → Integrations** to get real data.", {
@@ -89,6 +97,14 @@ export class EmailAgent extends BaseAgent {
     const entries = this.safeGetVault(context, 'transactions');
 
     if (entries.length === 0) {
+      const gmail = context.checkIntegration('gmail');
+      if (gmail.connected) {
+        return this.respond(
+          "Gmail is connected but no transactions detected from emails yet.\n\n" +
+          "Try syncing again or wait for new bank alert emails to arrive.",
+          { suggestions: ['Sync Now', 'Summarize inbox'] }
+        );
+      }
       return this.respond(
         "No transactions found from email sync yet.\n\n" +
         "Connect Gmail via **Settings → Integrations** to auto-detect bank alerts.",
@@ -122,6 +138,13 @@ export class EmailAgent extends BaseAgent {
     const entries = this.safeGetVault(context, 'orders');
 
     if (entries.length === 0) {
+      const gmail = context.checkIntegration('gmail');
+      if (gmail.connected) {
+        return this.respond(
+          "Gmail is connected but no orders detected from emails yet.\n\nTry syncing again or wait for new order confirmation emails.",
+          { suggestions: ['Sync Now', 'Summarize inbox'] }
+        );
+      }
       return this.respond(
         "No orders found from email sync yet.\n\nConnect Gmail to auto-detect Amazon, Flipkart, Swiggy orders.",
         { suggestions: ['Connect Gmail', 'Summarize inbox'] }
@@ -149,6 +172,13 @@ export class EmailAgent extends BaseAgent {
     const entries = this.safeGetVault(context, 'bills');
 
     if (entries.length === 0) {
+      const gmail = context.checkIntegration('gmail');
+      if (gmail.connected) {
+        return this.respond(
+          "Gmail is connected but no bills detected from emails yet.\nTry syncing again or wait for new bill/invoice emails.",
+          { suggestions: ['Sync Now'] }
+        );
+      }
       return this.respond(
         "No bills detected from emails yet.\nConnect Gmail to auto-detect utility bills, invoices, and reminders.",
         { suggestions: ['Connect Gmail'] }
@@ -173,6 +203,13 @@ export class EmailAgent extends BaseAgent {
     const entries = this.safeGetVault(context, 'income');
 
     if (entries.length === 0) {
+      const gmail = context.checkIntegration('gmail');
+      if (gmail.connected) {
+        return this.respond(
+          "Gmail is connected but no salary/income data detected from emails yet.\nTry syncing again or wait for new salary credit emails.",
+          { suggestions: ['Sync Now'] }
+        );
+      }
       return this.respond(
         "No salary/income data detected from emails yet.\nConnect Gmail to auto-detect salary credit alerts.",
         { suggestions: ['Connect Gmail'] }
@@ -197,6 +234,13 @@ export class EmailAgent extends BaseAgent {
     const vaultSummary = this.getEmailDataSummary(context);
 
     if (!vaultSummary) {
+      const gmail = context.checkIntegration('gmail');
+      if (gmail.connected) {
+        return this.respond(
+          "Gmail is connected but no email data synced yet. Try clicking **Sync Now** on the Integrations page.",
+          { suggestions: ['Sync Now', 'Show transactions'] }
+        );
+      }
       return this.respond(
         "No email data synced yet. Connect Gmail first to get AI-powered summaries.\n\n" +
         "Go to **Settings → Integrations → Gmail** to connect.",
@@ -252,6 +296,13 @@ Use markdown formatting. Keep it under 200 words.`,
     }
 
     if (allEntries.length === 0) {
+      const gmail = context.checkIntegration('gmail');
+      if (gmail.connected) {
+        return this.respond(
+          `No email data found to search for "${topicNames}". Gmail is connected — try syncing first.`,
+          { suggestions: ['Sync Now'] }
+        );
+      }
       return this.respond(
         `No email data found to search for "${topicNames}". Connect Gmail to start syncing.`,
         { suggestions: ['Connect Gmail'] }
