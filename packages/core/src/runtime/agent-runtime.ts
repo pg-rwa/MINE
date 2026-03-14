@@ -79,6 +79,9 @@ export interface AgentContext {
 
   /** Check if an integration is connected for this user */
   checkIntegration(integrationId: string): { connected: boolean; status?: string; lastSync?: Date };
+
+  /** Search a connected integration for specific keywords (on-demand) */
+  searchIntegration(integrationId: string, keywords: string[]): Promise<Array<{ category: string; key: string; data: Record<string, unknown> }>>;
 }
 
 interface RuntimeEvents {
@@ -445,6 +448,18 @@ export class AgentRuntime extends EventEmitter<RuntimeEvents> {
           status: conn.status,
           lastSync: conn.lastSync,
         };
+      },
+
+      searchIntegration: async (integrationId: string, keywords: string[]) => {
+        if (!this.integrations) return [];
+        const conn = this.integrations.findUserConnection(userId, integrationId);
+        if (!conn) return [];
+        try {
+          const entries = await this.integrations.search(conn.id, keywords);
+          return entries.map(e => ({ category: e.category, key: e.key, data: e.data }));
+        } catch {
+          return [];
+        }
       },
     };
   }

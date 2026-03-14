@@ -27,11 +27,29 @@ export class EmailAgent extends BaseAgent {
     pricing: { type: 'free' },
   };
 
+  // ─── Bank / Institution Aliases ─────────────────────
+  private static readonly BANK_ALIASES: Record<string, string[]> = {
+    'sharjah islamic bank': ['sib', 'sharjah islamic', 'sib.ae'],
+    'emirates nbd': ['enbd', 'emirates nbd', 'emiratesnbd'],
+    'adcb': ['abu dhabi commercial', 'adcb'],
+    'mashreq': ['mashreq', 'mashreqbank'],
+    'dib': ['dubai islamic', 'dib'],
+    'fab': ['first abu dhabi', 'fab'],
+    'rakbank': ['rak bank', 'rakbank'],
+    'hdfc': ['hdfc bank', 'hdfcbank'],
+    'icici': ['icici bank', 'icicibank'],
+    'sbi': ['state bank', 'sbi'],
+    'axis': ['axis bank', 'axisbank'],
+  };
+
   async handleMessage(message: Message, context: AgentContext): Promise<AgentResponse> {
     const content = message.content.toLowerCase();
     const intent = this.analyzeIntent(message, context);
 
     // Route to specific handlers based on intent
+    if (content.includes('statement') || content.includes('loan') || content.includes('emi')) {
+      return this.handleStatementRequest(message, context, intent);
+    }
     if (content.includes('transaction') || content.includes('bank') || content.includes('debit') || content.includes('credit')) {
       return this.handleTransactions(context, intent);
     }
@@ -58,9 +76,17 @@ export class EmailAgent extends BaseAgent {
       });
     }
 
+    // Smart keyword search — extract entity names and search Gmail directly
+    const keywords = this.extractSearchKeywords(content);
+    if (keywords.length > 0) {
+      const gmail = context.checkIntegration('gmail');
+      if (gmail.connected) {
+        return this.handleSmartSearch(keywords, context, intent);
+      }
+    }
+
     // Cross-domain search — delegate to other agents if needed
     if (intent.crossAgentRefs.length > 0 || this.isTopicSearch(content)) {
-      // If cross-agent data is needed, use delegation instead of just searching locally
       if (intent.dataSources.length > 0 || intent.crossAgentRefs.length > 0) {
         return this.handleTopicSearchWithDelegation(message, context, intent);
       }
@@ -89,6 +115,222 @@ export class EmailAgent extends BaseAgent {
       "Connect Gmail first via **Settings → Integrations** to get real data.", {
         suggestions: ['Summarize inbox', 'Show transactions', 'Show orders', 'Check bills'],
       });
+  }
+
+  // ─── Smart Keyword Search ───────────────────────────
+
+  /**
+   * Extract meaningful search keywords from user's message.
+   * Recognizes bank names, financial terms, and entity names.
+   */
+  private extractSearchKeywords(content: string): string[] {
+    const keywords: string[] = [];
+
+    // Check for known bank aliases
+    for (const [fullName, aliases] of Object.entries(EmailAgent.BANK_ALIASES)) {
+      if (aliases.some(a => content.includes(a)) || content.includes(fullName)) {
+        keywords.push(fullName);
+      }
+    }
+
+    // Extract quoted phrases like "Sharjah Islamic Bank"
+    const quoted = content.match(/"([^"]+)"/g);
+    if (quoted) {
+      keywords.push(...quoted.map(q => q.replace(/"/g, '')));
+    }
+
+    // Detect capitalized entity names (2+ words) that aren't common words
+    const commonWords = new Set(['show', 'me', 'my', 'the', 'from', 'about', 'find', 'search', 'check', 'get', 'any', 'all', 'email', 'emails', 'mail']);
+    const words = content.split(/\s+/).filter(w => !commonWords.has(w) && w.length > 2);
+
+    // Financial terms that indicate a targeted search is needed
+    const financialTerms = ['loan', 'mortgage', 'emi', 'insurance', 'investment', 'mutual fund', 'fixed deposit', 'fd', 'rd'];
+    for (const term of financialTerms) {
+      if (content.includes(term)) keywords.push(term);
+    }
+
+    return [...new Set(keywords)];
+  }
+
+  /**
+   * Perform on-demand search against Gmail when vault data doesn't have what user needs.
+   */
+  private async handleSmartSearch(
+    keywords: string[],
+    context: AgentContext,
+    intent: ReturnType<typeof this.analyzeIntent>
+  ): Promise<AgentResponse> {
+    // First check vault for existing matches
+    const allEntries: VaultEntry[] = [];
+    for (const category of ['transactions', 'orders', 'bills', 'income', 'expenses'] as const) {
+      const entries = this.safeGetVault(context, category);
+      allEntries.push(...entries);
+    }
+
+    const keywordStr = keywords.join(' ').toLowerCase();
+    const vaultMatches = allEntries.filter(e => {
+      const text = JSON.stringify(e.data).toLowerCase();
+      return keywords.some(k => text.includes(k.toLowerCase()));
+    });
+
+    // If vault has matches, return those
+    if (vaultMatches.length > 0) {
+      return this.formatSearchResults(vaultMatches, keywords, intent, context);
+    }
+
+    // Otherwise, do a live Gmail search with these keywords
+    const liveResults = await context.searchIntegration('gmail', keywords);
+
+    if (liveResults.length > 0) {
+      // Check for password-protected statements
+      const statements = liveResults.filter(r => r.data.type === 'statement' && r.data.passwordProtected);
+      if (statements.length > 0) {
+        return this.handlePasswordProtectedStatement(statements, keywords, context);
+      }
+
+      let text = `**Found ${liveResults.length} result(s) searching Gmail for "${keywords.join(', ')}":**\n\n`;
+      for (const entry of liveResults.slice(0, 10)) {
+        const d = entry.data;
+        const emoji = d.type === 'credit' ? '🟢' : d.type === 'debit' ? '🔴' : '📧';
+        text += `${emoji} **${d.description || d.name || d.subject || entry.key}**\n`;
+        if (d.amount) text += `   Amount: ₹${typeof d.amount === 'number' ? (d.amount as number).toLocaleString() : d.amount}`;
+        if (d.date) text += ` • ${new Date(d.date as string).toLocaleDateString()}`;
+        text += '\n\n';
+      }
+
+      return this.respondWithContext(intent, context, text, {
+        suggestions: ['Search more', 'Show all transactions', 'Summarize inbox'],
+      });
+    }
+
+    return this.respond(
+      `No results found in Gmail for "${keywords.join(', ')}". I searched your emails directly but couldn't find matching content.\n\nTry different keywords or check if those emails are in a different account.`,
+      { suggestions: ['Try different search', 'Summarize inbox'] }
+    );
+  }
+
+  private formatSearchResults(
+    matches: VaultEntry[],
+    keywords: string[],
+    intent: ReturnType<typeof this.analyzeIntent>,
+    context: AgentContext
+  ): AgentResponse {
+    let text = `**Found ${matches.length} result(s) for "${keywords.join(', ')}":**\n\n`;
+    for (const entry of matches.slice(0, 10)) {
+      const d = entry.data;
+      const emoji = d.type === 'credit' ? '🟢' : d.type === 'debit' ? '🔴' : '📧';
+      text += `${emoji} **[${entry.category}]** ${d.description || d.name || d.subject || entry.key}\n`;
+      if (d.amount) text += `   ₹${typeof d.amount === 'number' ? (d.amount as number).toLocaleString() : d.amount}`;
+      if (d.date) text += ` • ${new Date(d.date as string).toLocaleDateString()}`;
+      text += '\n\n';
+    }
+
+    return this.respondWithContext(intent, context, text, {
+      suggestions: ['Show more details', 'Search more', 'Summarize inbox'],
+    });
+  }
+
+  // ─── Statement & Password Handling ──────────────────
+
+  private async handleStatementRequest(
+    message: Message,
+    context: AgentContext,
+    intent: ReturnType<typeof this.analyzeIntent>
+  ): Promise<AgentResponse> {
+    const content = message.content.toLowerCase();
+    const gmail = context.checkIntegration('gmail');
+
+    if (!gmail.connected) {
+      return this.respond(
+        "Connect Gmail via **Settings → Integrations** to search for bank statements.",
+        { suggestions: ['Connect Gmail'] }
+      );
+    }
+
+    // Extract bank-specific keywords
+    const keywords = this.extractSearchKeywords(content);
+    keywords.push('statement'); // Always include 'statement'
+
+    // Search vault first, then live
+    const vaultEntries = this.safeGetVault(context, 'transactions');
+    const statementEntries = vaultEntries.filter(e =>
+      e.data.type === 'statement' && keywords.some(k => JSON.stringify(e.data).toLowerCase().includes(k.toLowerCase()))
+    );
+
+    if (statementEntries.length > 0) {
+      return this.handlePasswordProtectedStatement(
+        statementEntries.map(e => ({ category: e.category, key: e.key, data: e.data })),
+        keywords,
+        context
+      );
+    }
+
+    // Live search Gmail for statements
+    const liveResults = await context.searchIntegration('gmail', keywords);
+    const statements = liveResults.filter(r => r.data.type === 'statement');
+
+    if (statements.length > 0) {
+      return this.handlePasswordProtectedStatement(statements, keywords, context);
+    }
+
+    // Found non-statement results
+    if (liveResults.length > 0) {
+      let text = `I didn't find statement PDFs, but found **${liveResults.length} related email(s)** for "${keywords.join(', ')}":\n\n`;
+      for (const entry of liveResults.slice(0, 5)) {
+        text += `📧 **${entry.data.description || entry.data.subject || entry.key}**\n`;
+        if (entry.data.date) text += `   ${new Date(entry.data.date as string).toLocaleDateString()}\n`;
+        text += '\n';
+      }
+      return this.respondWithContext(intent, context, text, {
+        suggestions: ['Search for more', 'Show transactions'],
+      });
+    }
+
+    return this.respond(
+      `No statements found for "${keywords.join(', ')}". I searched your Gmail but couldn't find matching bank statements.\n\nMake sure the statement emails are in your inbox (not trash/spam).`,
+      { suggestions: ['Try different search', 'Show transactions'] }
+    );
+  }
+
+  private handlePasswordProtectedStatement(
+    statements: Array<{ category: string; key: string; data: Record<string, unknown> }>,
+    keywords: string[],
+    context: AgentContext
+  ): AgentResponse {
+    const stmt = statements[0];
+    let text = `**Found ${statements.length} statement(s) for "${keywords.join(', ')}"**\n\n`;
+    text += `📄 **${stmt.data.description || stmt.data.subject || 'Bank Statement'}**\n`;
+    if (stmt.data.date) text += `   Date: ${new Date(stmt.data.date as string).toLocaleDateString()}\n`;
+    if (stmt.data.source) text += `   From: ${stmt.data.source}\n`;
+
+    if (stmt.data.hasAttachment) {
+      text += `   📎 Attachment: ${(stmt.data.attachments as any[])?.[0]?.name || 'PDF file'}\n`;
+    }
+
+    if (stmt.data.passwordProtected) {
+      text += `\n🔒 **This statement is password-protected.**\n`;
+      if (stmt.data.passwordHint) {
+        text += `   Hint from email: *${stmt.data.passwordHint}*\n`;
+      }
+      text += `\nPlease share the password so I can open and extract the statement details for you.`;
+
+      // Remember that we're waiting for a password
+      context.remember('pending_statement', {
+        statementKey: stmt.key,
+        keywords,
+        waitingForPassword: true,
+      }, 'context');
+
+      return this.respond(text, {
+        suggestions: ['Enter password', 'Skip this statement', 'Show other results'],
+        actions: [{ type: 'confirm_action', payload: { action: 'request_password', statementKey: stmt.key } }],
+      });
+    }
+
+    text += '\n\nI can extract the details from this statement for you.';
+    return this.respond(text, {
+      suggestions: ['Extract details', 'Show more statements'],
+    });
   }
 
   // ─── Transaction Alerts ──────────────────────────────

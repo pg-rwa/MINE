@@ -58,6 +58,8 @@ export interface FetchOptions {
   limit?: number;
   /** Category filter */
   category?: DataCategory;
+  /** Custom search keywords (for on-demand agent searches) */
+  keywords?: string[];
 }
 
 /**

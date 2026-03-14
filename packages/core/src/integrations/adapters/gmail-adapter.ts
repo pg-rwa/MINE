@@ -155,8 +155,15 @@ export class GmailAdapter implements IntegrationAdapter {
       parts.push(`after:${dateStr}`);
     }
 
-    // Search for financial/transactional emails
-    parts.push('(subject:(transaction OR payment OR order OR bill OR salary OR credit OR debit OR EMI OR delivery OR shipped))');
+    // If agent provided specific keywords, use those for targeted search
+    if (options?.keywords && options.keywords.length > 0) {
+      const keywordQuery = options.keywords.map(k => `"${k}"`).join(' OR ');
+      parts.push(`(${keywordQuery})`);
+      return parts.join(' ');
+    }
+
+    // Default: broad financial/transactional email search
+    parts.push('(subject:(transaction OR payment OR order OR bill OR salary OR credit OR debit OR EMI OR delivery OR shipped OR statement OR loan OR balance OR account OR invoice OR receipt OR subscription OR insurance OR renewal))');
 
     return parts.join(' ');
   }
@@ -190,14 +197,86 @@ export class GmailAdapter implements IntegrationAdapter {
       return this.parseBillNotification(subject, body, from, date);
     }
 
+    // Bank statement with attachment (password-protected PDFs)
+    if (this.isStatement(from, subject, msg)) {
+      return this.parseStatement(subject, body, from, date, msg);
+    }
+
+    return null;
+  }
+
+  private isStatement(from: string, subject: string, msg: any): boolean {
+    const combined = (from + ' ' + subject).toLowerCase();
+    const hasAttachment = this.hasAttachments(msg);
+    return (hasAttachment || /statement|e-statement|e\.statement/i.test(subject)) &&
+      /statement|account\s*summary|monthly\s*report|loan\s*details/i.test(combined);
+  }
+
+  private parseStatement(subject: string, body: string, from: string, date: Date, msg: any): NormalizedEntry {
+    const attachments = this.getAttachmentInfo(msg);
+    const passwordHint = this.detectPasswordHint(body);
+
+    return {
+      category: 'transactions',
+      key: `statement-${date.getTime()}`,
+      data: {
+        type: 'statement',
+        description: subject,
+        source: from,
+        date: date.toISOString(),
+        parsedFrom: 'email',
+        hasAttachment: attachments.length > 0,
+        attachments: attachments.map(a => ({ name: a.filename, mimeType: a.mimeType, size: a.size })),
+        passwordProtected: !!passwordHint,
+        passwordHint: passwordHint || undefined,
+      },
+      timestamp: date,
+    };
+  }
+
+  private hasAttachments(msg: any): boolean {
+    const parts = msg.payload?.parts || [];
+    return parts.some((p: any) => p.filename && p.filename.length > 0);
+  }
+
+  private getAttachmentInfo(msg: any): Array<{ filename: string; mimeType: string; size: number }> {
+    const parts = msg.payload?.parts || [];
+    return parts
+      .filter((p: any) => p.filename && p.filename.length > 0)
+      .map((p: any) => ({
+        filename: p.filename,
+        mimeType: p.mimeType || 'application/octet-stream',
+        size: p.body?.size || 0,
+      }));
+  }
+
+  private detectPasswordHint(body: string): string | null {
+    // Common patterns: "Password is your DOB in DDMMYYYY", "Password: last 4 digits of account"
+    const patterns = [
+      /password\s*(?:is|:)\s*(.{5,80})/i,
+      /protected\s*(?:with|by|using)\s*(.{5,80})/i,
+      /to\s+open\s*(?:this|the)?\s*(?:pdf|file|attachment|statement)\s*[,:]\s*(.{5,80})/i,
+    ];
+    for (const pattern of patterns) {
+      const match = body.match(pattern);
+      if (match) return match[1].trim().replace(/\.$/, '');
+    }
     return null;
   }
 
   private isBankAlert(from: string, subject: string): boolean {
-    const bankDomains = ['hdfcbank', 'icicibank', 'sbi', 'axisbank', 'kotak', 'chase', 'bofa', 'wellsfargo', 'citi'];
+    const bankDomains = [
+      // India
+      'hdfcbank', 'icicibank', 'sbi', 'axisbank', 'kotak', 'yesbank', 'indusind', 'pnb', 'bankofbaroda', 'idfc', 'rbl',
+      // UAE / Middle East
+      'sib.ae', 'sharjahislamic', 'emiratesnbd', 'adcb', 'fab', 'mashreq', 'dib', 'rakbank', 'cbd', 'nbf', 'ajmanbank', 'sc.com',
+      // US / Europe
+      'chase', 'bofa', 'wellsfargo', 'citi', 'capitalone', 'hsbc', 'barclays', 'revolut', 'wise',
+    ];
     const fromLower = from.toLowerCase();
-    return bankDomains.some(b => fromLower.includes(b)) &&
-      /debit|credit|transaction|transfer|payment/i.test(subject);
+    const subjectLower = subject.toLowerCase();
+    return (bankDomains.some(b => fromLower.includes(b)) || /bank|financial/i.test(from)) &&
+      /debit|credit|transaction|transfer|payment|statement|balance|loan|emi|account/i.test(subjectLower);
   }
 
   private parseBankAlert(subject: string, body: string, from: string, date: Date): NormalizedEntry {

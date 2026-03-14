@@ -209,6 +209,40 @@ export class IntegrationGateway extends EventEmitter<GatewayEvents> {
   }
 
   /**
+   * Search an integration for specific keywords (on-demand agent search).
+   * Unlike sync() which uses the default broad query, this targets specific terms.
+   */
+  async search(connectionId: string, keywords: string[]): Promise<NormalizedEntry[]> {
+    const connection = this.connections.get(connectionId);
+    if (!connection) throw new Error(`Connection not found: ${connectionId}`);
+
+    const adapter = this.adapters.get(connection.integrationId);
+    if (!adapter || !connection.tokens) return [];
+
+    const tokens = await this.ensureFreshTokens(connection, adapter);
+    const entries = await adapter.fetchData(tokens, {
+      keywords,
+      limit: 25,
+    });
+
+    // Store results in vault
+    if (this.vault) {
+      for (const entry of entries) {
+        this.vault.put(
+          connection.userId,
+          entry.category,
+          entry.key,
+          entry.data,
+          'integration',
+          connection.integrationId
+        );
+      }
+    }
+
+    return entries;
+  }
+
+  /**
    * Disconnect an integration.
    */
   disconnect(connectionId: string): void {
