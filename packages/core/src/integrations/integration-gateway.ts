@@ -1,5 +1,7 @@
 import { EventEmitter } from 'eventemitter3';
 import { DataCategory } from '../types';
+import { IntegrationAdapter, OAuthTokens, NormalizedEntry } from './adapter-types';
+import { DataVault } from '../vault/data-vault';
 
 export interface IntegrationConfig {
   id: string;
@@ -17,7 +19,9 @@ export interface IntegrationConnection {
   integrationId: string;
   status: 'connected' | 'disconnected' | 'error' | 'syncing';
   credentials: Record<string, unknown>; // encrypted in production
+  tokens?: OAuthTokens;
   lastSync?: Date;
+  lastSyncCount?: number;
   errorMessage?: string;
   createdAt: Date;
 }
@@ -31,11 +35,21 @@ interface GatewayEvents {
 
 /**
  * IntegrationGateway manages external app connections.
- * Handles OAuth flows, API sync, IMAP, webhooks, etc.
+ * Now wired to real adapters — sync() actually fetches data and stores it in the vault.
  */
 export class IntegrationGateway extends EventEmitter<GatewayEvents> {
   private integrations: Map<string, IntegrationConfig> = new Map();
   private connections: Map<string, IntegrationConnection> = new Map();
+  private adapters: Map<string, IntegrationAdapter> = new Map();
+  private vault: DataVault | null = null;
+
+  /**
+   * Set the adapter registry and data vault for real sync operations.
+   */
+  configure(adapters: Map<string, IntegrationAdapter>, vault: DataVault): void {
+    this.adapters = adapters;
+    this.vault = vault;
+  }
 
   /**
    * Register an available integration.
@@ -45,18 +59,44 @@ export class IntegrationGateway extends EventEmitter<GatewayEvents> {
   }
 
   /**
-   * Connect a user to an integration.
+   * Get the adapter for an integration (for OAuth flows).
    */
-  async connect(userId: string, integrationId: string, credentials: Record<string, unknown>): Promise<IntegrationConnection> {
+  getAdapter(integrationId: string): IntegrationAdapter | undefined {
+    return this.adapters.get(integrationId);
+  }
+
+  /**
+   * Connect a user to an integration with OAuth tokens.
+   */
+  async connect(
+    userId: string,
+    integrationId: string,
+    credentials: Record<string, unknown>,
+    tokens?: OAuthTokens
+  ): Promise<IntegrationConnection> {
     const integration = this.integrations.get(integrationId);
     if (!integration) throw new Error(`Unknown integration: ${integrationId}`);
+
+    // Check if user already has a connection to this integration
+    const existing = Array.from(this.connections.values()).find(
+      c => c.userId === userId && c.integrationId === integrationId && c.status !== 'disconnected'
+    );
+    if (existing) {
+      // Update existing connection
+      existing.credentials = credentials;
+      existing.tokens = tokens;
+      existing.status = 'connected';
+      existing.errorMessage = undefined;
+      return existing;
+    }
 
     const connection: IntegrationConnection = {
       id: crypto.randomUUID(),
       userId,
       integrationId,
       status: 'connected',
-      credentials, // encrypted in production
+      credentials,
+      tokens,
       createdAt: new Date(),
     };
 
@@ -67,24 +107,77 @@ export class IntegrationGateway extends EventEmitter<GatewayEvents> {
 
   /**
    * Trigger a sync for a connection.
+   * Now actually fetches data from the adapter and stores it in the vault.
    */
-  async sync(connectionId: string): Promise<void> {
+  async sync(connectionId: string): Promise<NormalizedEntry[]> {
     const connection = this.connections.get(connectionId);
     if (!connection) throw new Error(`Connection not found: ${connectionId}`);
+
+    const adapter = this.adapters.get(connection.integrationId);
 
     connection.status = 'syncing';
     this.emit('sync:started', connectionId);
 
     try {
-      // In production: fetch data from external service, store in vault
+      let entries: NormalizedEntry[] = [];
+
+      if (adapter && connection.tokens) {
+        // Real sync: check if token needs refresh
+        const tokens = await this.ensureFreshTokens(connection, adapter);
+
+        // Fetch data from the external service
+        entries = await adapter.fetchData(tokens, {
+          since: connection.lastSync, // only fetch new data since last sync
+          limit: 100,
+        });
+
+        // Store each entry in the vault
+        if (this.vault) {
+          for (const entry of entries) {
+            this.vault.put(
+              connection.userId,
+              entry.category,
+              entry.key,
+              entry.data,
+              'integration',
+              connection.integrationId
+            );
+          }
+        }
+      }
+
       connection.status = 'connected';
       connection.lastSync = new Date();
-      this.emit('sync:completed', connectionId, 0);
+      connection.lastSyncCount = entries.length;
+      this.emit('sync:completed', connectionId, entries.length);
+      return entries;
     } catch (error) {
       connection.status = 'error';
       connection.errorMessage = (error as Error).message;
       this.emit('sync:failed', connectionId, connection.errorMessage);
+      throw error;
     }
+  }
+
+  /**
+   * Refresh tokens if expired.
+   */
+  private async ensureFreshTokens(
+    connection: IntegrationConnection,
+    adapter: IntegrationAdapter
+  ): Promise<OAuthTokens> {
+    const tokens = connection.tokens!;
+
+    if (tokens.expiresAt && tokens.expiresAt.getTime() < Date.now() + 60_000) {
+      // Token expires within 1 minute — refresh it
+      if (tokens.refreshToken) {
+        const refreshed = await adapter.refreshToken(tokens.refreshToken);
+        connection.tokens = refreshed;
+        return refreshed;
+      }
+    }
+
+    return tokens;
   }
 
   /**
@@ -94,8 +187,25 @@ export class IntegrationGateway extends EventEmitter<GatewayEvents> {
     const connection = this.connections.get(connectionId);
     if (connection) {
       connection.status = 'disconnected';
-      connection.credentials = {}; // wipe credentials
+      connection.credentials = {};
+      connection.tokens = undefined;
     }
+  }
+
+  /**
+   * Get a specific connection.
+   */
+  getConnection(connectionId: string): IntegrationConnection | undefined {
+    return this.connections.get(connectionId);
+  }
+
+  /**
+   * Find a user's connection to a specific integration.
+   */
+  findUserConnection(userId: string, integrationId: string): IntegrationConnection | undefined {
+    return Array.from(this.connections.values()).find(
+      c => c.userId === userId && c.integrationId === integrationId && c.status !== 'disconnected'
+    );
   }
 
   /**

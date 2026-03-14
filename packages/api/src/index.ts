@@ -11,6 +11,7 @@ import {
   IntegrationGateway,
   WorkflowEngine,
   AgentMarketplace,
+  createAdapterRegistry,
 } from '@mine/core';
 import { registerBuiltInAgents } from '@mine/agents';
 import { createApp } from './app';
@@ -51,7 +52,10 @@ async function main() {
   const workflows = new WorkflowEngine();
   const marketplace = new AgentMarketplace();
 
-  // ─── Register Integrations ────────────────────────
+  // ─── Register Integrations & Adapters ──────────────
+  const adapters = createAdapterRegistry();
+  integrations.configure(adapters, vault);
+
   const integrationConfigs = [
     { id: 'gmail', name: 'Gmail', type: 'oauth2' as const, provider: 'google', dataCategory: 'transactions' as const, syncInterval: 30, config: {} },
     { id: 'google-calendar', name: 'Google Calendar', type: 'oauth2' as const, provider: 'google', dataCategory: 'calendar' as const, syncInterval: 15, config: {} },

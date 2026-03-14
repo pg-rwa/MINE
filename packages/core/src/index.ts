@@ -12,5 +12,7 @@ export * from './ai/ai-engine';
 export * from './audit/audit-log';
 export * from './workflow/workflow-engine';
 export * from './integrations/integration-gateway';
+export * from './integrations/adapter-types';
+export * from './integrations/adapters';
 export * from './marketplace/agent-marketplace';
 export * from './types';

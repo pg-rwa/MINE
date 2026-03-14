@@ -3,7 +3,7 @@ import { AppContext } from '../app';
 
 /**
  * Integration configuration — describes what's available to connect.
- * In production, adapter credentials come from env vars.
+ * Adapter credentials come from env vars.
  */
 const AVAILABLE_INTEGRATIONS = [
   {
@@ -101,12 +101,21 @@ export function integrationRoutes(ctx: AppContext): FastifyPluginCallback {
     // List user's active connections
     app.get('/connections', async (request) => {
       const userId = (request as any).userId;
-      return ctx.integrations.listConnections(userId);
+      const connections = ctx.integrations.listConnections(userId);
+      // Don't leak tokens/credentials to the frontend
+      return connections.map(c => ({
+        id: c.id,
+        integrationId: c.integrationId,
+        status: c.status,
+        lastSync: c.lastSync,
+        lastSyncCount: c.lastSyncCount,
+        errorMessage: c.errorMessage,
+        createdAt: c.createdAt,
+      }));
     });
 
     // Start OAuth flow — returns the auth URL to redirect to
     app.post<{ Body: { integrationId: string } }>('/auth/start', async (request) => {
-      const userId = (request as any).userId;
       const { integrationId } = request.body;
 
       const integration = AVAILABLE_INTEGRATIONS.find(i => i.id === integrationId);
@@ -115,10 +124,6 @@ export function integrationRoutes(ctx: AppContext): FastifyPluginCallback {
         return { error: 'coming_soon', message: `${integration.name} integration is coming soon!` };
       }
 
-      // Generate state token for CSRF protection
-      const state = Buffer.from(JSON.stringify({ userId, integrationId, ts: Date.now() })).toString('base64url');
-
-      // For demo: simulate the OAuth URL (needs real credentials in production)
       const configured = integration.requiredEnv.every(e => !!process.env[e]);
       if (!configured) {
         return {
@@ -128,16 +133,24 @@ export function integrationRoutes(ctx: AppContext): FastifyPluginCallback {
         };
       }
 
-      // In production: use the actual adapter to generate the auth URL
+      // Use the real adapter to generate the auth URL
+      const adapter = ctx.integrations.getAdapter(integrationId);
+      if (!adapter) {
+        return { error: 'no_adapter', message: `No adapter registered for ${integrationId}` };
+      }
+
+      const userId = (request as any).userId;
+      const state = Buffer.from(
+        JSON.stringify({ userId, integrationId, ts: Date.now() })
+      ).toString('base64url');
+
       const redirectUri = `${request.protocol}://${request.hostname}/api/integrations/auth/callback`;
-      return {
-        status: 'redirect',
-        authUrl: `https://accounts.google.com/o/oauth2/v2/auth?state=${state}&redirect_uri=${encodeURIComponent(redirectUri)}`,
-        state,
-      };
+      const authUrl = adapter.getAuthUrl(state, redirectUri);
+
+      return { status: 'redirect', authUrl, state };
     });
 
-    // OAuth callback — exchanges code for tokens
+    // OAuth callback — exchanges code for tokens, stores connection, triggers first sync
     app.get<{ Querystring: { code?: string; state?: string; error?: string } }>(
       '/auth/callback',
       async (request, reply) => {
@@ -155,15 +168,36 @@ export function integrationRoutes(ctx: AppContext): FastifyPluginCallback {
           const stateData = JSON.parse(Buffer.from(state, 'base64url').toString());
           const { userId, integrationId } = stateData;
 
-          // In production: use adapter.exchangeToken(code, redirectUri)
-          // Store the connection
-          await ctx.integrations.connect(userId, integrationId, {
-            accessToken: code, // Placeholder — real token from exchange
-            connectedAt: new Date().toISOString(),
+          // Verify state isn't too old (5 minute window)
+          if (Date.now() - stateData.ts > 5 * 60 * 1000) {
+            return reply.redirect('/?integration_error=state_expired');
+          }
+
+          const adapter = ctx.integrations.getAdapter(integrationId);
+          if (!adapter) {
+            return reply.redirect('/?integration_error=no_adapter');
+          }
+
+          // Exchange auth code for real tokens
+          const redirectUri = `${request.protocol}://${request.hostname}/api/integrations/auth/callback`;
+          const tokens = await adapter.exchangeToken(code, redirectUri);
+
+          // Store the connection with real tokens
+          const connection = await ctx.integrations.connect(
+            userId,
+            integrationId,
+            { connectedAt: new Date().toISOString() },
+            tokens
+          );
+
+          // Trigger initial sync in the background (don't block the redirect)
+          ctx.integrations.sync(connection.id).catch(err => {
+            console.error(`Initial sync failed for ${integrationId}:`, err.message);
           });
 
           return reply.redirect('/?integration_success=' + integrationId);
         } catch (err) {
+          console.error('OAuth callback error:', err);
           return reply.redirect('/?integration_error=token_exchange_failed');
         }
       }
@@ -182,13 +216,23 @@ export function integrationRoutes(ctx: AppContext): FastifyPluginCallback {
         connectedAt: new Date().toISOString(),
       });
 
-      return { success: true, connection };
+      return { success: true, connection: { id: connection.id, status: connection.status } };
     });
 
     // Trigger sync
     app.post<{ Params: { connectionId: string } }>('/sync/:connectionId', async (request) => {
-      await ctx.integrations.sync(request.params.connectionId);
-      return { success: true };
+      try {
+        const entries = await ctx.integrations.sync(request.params.connectionId);
+        const connection = ctx.integrations.getConnection(request.params.connectionId);
+        return {
+          success: true,
+          recordCount: entries.length,
+          lastSync: connection?.lastSync,
+          categories: [...new Set(entries.map(e => e.category))],
+        };
+      } catch (err) {
+        return { success: false, error: (err as Error).message };
+      }
     });
 
     // Disconnect
