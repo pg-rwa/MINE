@@ -43,7 +43,10 @@ export interface AppContext {
 }
 
 export async function createApp(ctx: AppContext) {
-  const app = Fastify({ logger: true });
+  const app = Fastify({
+    logger: true,
+    trustProxy: true,  // Required behind Railway/cloud reverse proxies for correct protocol detection
+  });
 
   await app.register(cors, { origin: true });
 

@@ -144,7 +144,8 @@ export function integrationRoutes(ctx: AppContext): FastifyPluginCallback {
         JSON.stringify({ userId, integrationId, ts: Date.now() })
       ).toString('base64url');
 
-      const redirectUri = `${request.protocol}://${request.hostname}/api/integrations/auth/callback`;
+      const baseUrl = process.env.APP_URL || `${request.protocol}://${request.hostname}`;
+      const redirectUri = `${baseUrl}/api/integrations/auth/callback`;
       const authUrl = adapter.getAuthUrl(state, redirectUri);
 
       return { status: 'redirect', authUrl, state };
@@ -179,7 +180,8 @@ export function integrationRoutes(ctx: AppContext): FastifyPluginCallback {
           }
 
           // Exchange auth code for real tokens
-          const redirectUri = `${request.protocol}://${request.hostname}/api/integrations/auth/callback`;
+          const baseUrl = process.env.APP_URL || `${request.protocol}://${request.hostname}`;
+          const redirectUri = `${baseUrl}/api/integrations/auth/callback`;
           const tokens = await adapter.exchangeToken(code, redirectUri);
 
           // Store the connection with real tokens
