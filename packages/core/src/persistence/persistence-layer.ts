@@ -118,6 +118,16 @@ export class PersistenceLayer {
       );
 
       CREATE INDEX IF NOT EXISTS idx_perm_user_agent ON permissions(user_id, agent_id);
+
+      CREATE TABLE IF NOT EXISTS installed_agents (
+        user_id TEXT NOT NULL,
+        agent_id TEXT NOT NULL,
+        active INTEGER NOT NULL DEFAULT 1,
+        installed_at TEXT NOT NULL,
+        PRIMARY KEY (user_id, agent_id)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_installed_user ON installed_agents(user_id);
     `);
   }
 
@@ -524,6 +534,36 @@ export class PersistenceLayer {
       autoRenew: !!(row as any).auto_renew,
       revokedAt: (row as any).revoked_at ? new Date((row as any).revoked_at) : undefined,
     }));
+  }
+
+  // ─── Installed Agents ──────────────────────────────
+
+  saveInstalledAgent(userId: string, agentId: string, active: boolean): void {
+    this.db.prepare(`
+      INSERT INTO installed_agents (user_id, agent_id, active, installed_at)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(user_id, agent_id) DO UPDATE SET active = excluded.active
+    `).run(userId, agentId, active ? 1 : 0, new Date().toISOString());
+  }
+
+  removeInstalledAgent(userId: string, agentId: string): void {
+    this.db.prepare('DELETE FROM installed_agents WHERE user_id = ? AND agent_id = ?').run(userId, agentId);
+  }
+
+  getInstalledAgents(userId: string): Array<{ agentId: string; active: boolean; installedAt: string }> {
+    return this.db.prepare(
+      'SELECT agent_id, active, installed_at FROM installed_agents WHERE user_id = ?'
+    ).all(userId).map((row: any) => ({
+      agentId: row.agent_id,
+      active: !!row.active,
+      installedAt: row.installed_at,
+    }));
+  }
+
+  updateAgentActive(userId: string, agentId: string, active: boolean): void {
+    this.db.prepare(
+      'UPDATE installed_agents SET active = ? WHERE user_id = ? AND agent_id = ?'
+    ).run(active ? 1 : 0, userId, agentId);
   }
 
   // ─── Lifecycle ──────────────────────────────────────

@@ -127,6 +127,9 @@ export class AgentRuntime extends EventEmitter<RuntimeEvents> {
     await agent.onInstall(context);
     this.emit('agent:installed', id);
 
+    // Persist installation to survive restarts
+    this.persistence?.saveInstalledAgent(userId, id, true);
+
     await this.activate(id, userId);
   }
 
@@ -141,6 +144,7 @@ export class AgentRuntime extends EventEmitter<RuntimeEvents> {
     this.activeAgents.add(agentId);
     this.emit('agent:activated', agentId);
 
+    this.persistence?.updateAgentActive(userId, agentId, true);
     this.auditLog.log(userId, agentId, 'agent_activated', {});
   }
 
@@ -154,6 +158,7 @@ export class AgentRuntime extends EventEmitter<RuntimeEvents> {
     this.activeAgents.delete(agentId);
     this.emit('agent:deactivated', agentId);
 
+    this.persistence?.updateAgentActive(userId, agentId, false);
     this.auditLog.log(userId, agentId, 'agent_deactivated', {});
   }
 
@@ -170,6 +175,7 @@ export class AgentRuntime extends EventEmitter<RuntimeEvents> {
     await agent.onUninstall();
     this.agents.delete(agentId);
     this.permissions.revokeAll(userId, agentId);
+    this.persistence?.removeInstalledAgent(userId, agentId);
     this.emit('agent:uninstalled', agentId);
 
     this.auditLog.log(userId, agentId, 'agent_uninstalled', {});
@@ -253,6 +259,39 @@ export class AgentRuntime extends EventEmitter<RuntimeEvents> {
       manifest: agent.manifest,
       active: this.activeAgents.has(id),
     }));
+  }
+
+  /**
+   * Restore previously installed agents from persistence.
+   * Called on startup to recover agent state across restarts/redeployments.
+   */
+  async restoreAgents(userId: string, registry: { create: (agentId: string) => IAgent }): Promise<number> {
+    if (!this.persistence) return 0;
+
+    const saved = this.persistence.getInstalledAgents(userId);
+    let restored = 0;
+
+    for (const entry of saved) {
+      try {
+        if (this.agents.has(entry.agentId)) continue; // Already loaded
+
+        const agent = registry.create(entry.agentId);
+        this.agents.set(entry.agentId, agent);
+        const context = this.createContext(userId, entry.agentId);
+        await agent.onInstall(context);
+
+        if (entry.active) {
+          await agent.onActivate(context);
+          this.activeAgents.add(entry.agentId);
+        }
+
+        restored++;
+      } catch (err) {
+        console.warn(`Failed to restore agent '${entry.agentId}':`, err);
+      }
+    }
+
+    return restored;
   }
 
   // ─── Private ────────────────────────────────────────
