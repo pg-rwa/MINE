@@ -23,7 +23,28 @@ async function main() {
   const permissions = new PermissionEngine();
   const vault = new DataVault(permissions);
   const auditLog = new AuditLog();
-  const aiEngine = new AIEngine({ provider: 'claude', model: 'claude-sonnet-4-6' });
+  const aiEngine = new AIEngine({
+    providers: [
+      {
+        name: 'claude',
+        enabled: true,
+        priority: 1, // preferred — change to 2 to prefer OpenAI
+        models: {
+          fast: 'claude-haiku-4-5-20251001',  // cheap: email parsing, extraction, classification
+          smart: 'claude-sonnet-4-6',          // powerful: analysis, reasoning, complex queries
+        },
+      },
+      {
+        name: 'openai',
+        enabled: true,
+        priority: 2, // fallback — change to 1 to prefer OpenAI
+        models: {
+          fast: 'gpt-4o-mini',  // cheap: extraction, classification
+          smart: 'gpt-4o',      // powerful: analysis, reasoning
+        },
+      },
+    ],
+  });
   const scheduler = new Scheduler();
   const notifier = new Notifier();
   const integrations = new IntegrationGateway();
@@ -57,6 +78,7 @@ async function main() {
     permissions,
     vault,
     auditLog,
+    aiEngine,
     scheduler,
     notifier,
     integrations,
@@ -70,7 +92,13 @@ async function main() {
   await app.listen({ port, host });
   console.log(`MINE API running at http://${host}:${port}`);
   console.log(`Registered ${registry.listAvailable().length} agents`);
-  console.log(`AI Engine: ${aiEngine.isAvailable ? 'Connected (Claude API)' : 'Not configured — set ANTHROPIC_API_KEY for smart responses'}`);
+  const providerStatus = aiEngine.getProviderStatus();
+  if (providerStatus.some(p => p.available)) {
+    const active = providerStatus.filter(p => p.available).map(p => p.name).join(' + ');
+    console.log(`AI Engine: Connected (${active}) — auto-failover ${providerStatus.filter(p => p.available).length > 1 ? 'enabled' : 'disabled'}`);
+  } else {
+    console.log('AI Engine: Not configured — set ANTHROPIC_API_KEY and/or OPENAI_API_KEY for smart responses');
+  }
 }
 
 main().catch((err) => {

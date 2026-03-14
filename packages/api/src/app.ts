@@ -10,6 +10,7 @@ import {
   PermissionEngine,
   DataVault,
   AuditLog,
+  AIEngine,
   Scheduler,
   Notifier,
   IntegrationGateway,
@@ -30,6 +31,7 @@ export interface AppContext {
   permissions: PermissionEngine;
   vault: DataVault;
   auditLog: AuditLog;
+  aiEngine: AIEngine;
   scheduler: Scheduler;
   notifier: Notifier;
   integrations: IntegrationGateway;
@@ -65,7 +67,14 @@ export async function createApp(ctx: AppContext) {
   });
 
   // Health check
-  app.get('/health', async () => ({ status: 'ok', version: '0.1.0' }));
+  app.get('/health', async () => ({
+    status: 'ok',
+    version: '0.1.0',
+    ai: {
+      available: ctx.aiEngine.isAvailable,
+      providers: ctx.aiEngine.getProviderStatus(),
+    },
+  }));
 
   return app;
 }

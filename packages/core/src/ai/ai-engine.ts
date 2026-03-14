@@ -1,24 +1,44 @@
 import Anthropic from '@anthropic-ai/sdk';
+import OpenAI from 'openai';
 
 /**
- * AIEngine abstracts the AI/LLM layer.
- * Supports Claude API with automatic fallback.
+ * AIEngine with multi-provider support.
+ * Supports Claude (Anthropic) and OpenAI with automatic failover.
+ * When one provider hits rate limits or errors, it falls back to the other.
+ * Includes tiered routing: cheap models for extraction, smart models for reasoning.
  */
-export interface AIConfig {
-  provider: 'claude' | 'local';
-  model: string;
+
+// ─── Types ─────────────────────────────────────────────
+
+export interface ProviderConfig {
+  name: 'claude' | 'openai';
   apiKey?: string;
-  maxTokens?: number;
+  enabled: boolean;
+  priority: number; // lower = preferred
+  models: {
+    fast: string;  // cheap model for extraction, classification
+    smart: string; // powerful model for reasoning, analysis
+  };
 }
+
+export interface AIConfig {
+  providers?: ProviderConfig[];
+  maxTokens?: number;
+  /** @deprecated Use providers array instead */
+  provider?: 'claude' | 'local';
+  /** @deprecated Use providers array instead */
+  model?: string;
+  /** @deprecated Use providers array instead */
+  apiKey?: string;
+}
+
+export type TaskTier = 'fast' | 'smart';
 
 export interface EmbeddingResult {
   vector: number[];
   model: string;
 }
 
-/**
- * Parsed user intent from a natural language message.
- */
 export interface UserIntent {
   primaryAction: string;
   primaryTopic: string;
@@ -30,7 +50,19 @@ export interface UserIntent {
   confidence: number;
 }
 
-// Keyword → agent domain mapping
+// ─── Provider Tracking ─────────────────────────────────
+
+interface ProviderState {
+  config: ProviderConfig;
+  client: Anthropic | OpenAI | null;
+  type: 'claude' | 'openai';
+  available: boolean;
+  consecutiveErrors: number;
+  cooldownUntil: number; // timestamp
+}
+
+// ─── Keyword Maps ──────────────────────────────────────
+
 const DOMAIN_KEYWORDS: Record<string, string[]> = {
   finance: ['emi', 'loan', 'expense', 'income', 'salary', 'budget', 'spend', 'bank', 'payment', 'money', 'cost', 'balance', 'net worth', 'investment', 'saving', 'credit', 'debit', 'installment', 'mortgage'],
   email: ['mail', 'email', 'inbox', 'unread', 'newsletter', 'subscribe', 'gmail', 'outlook'],
@@ -56,83 +88,295 @@ const ACTION_VERBS: Record<string, string[]> = {
   remind: ['remind', 'alert', 'notify', 'schedule', 'due'],
 };
 
+// ─── AIEngine ──────────────────────────────────────────
+
 export class AIEngine {
-  private config: AIConfig;
-  private client: Anthropic | null = null;
+  private providers: ProviderState[] = [];
+  private defaultMaxTokens: number;
 
   constructor(config: AIConfig) {
-    this.config = config;
-    // Initialize Claude client if API key available
-    const apiKey = config.apiKey || process.env.ANTHROPIC_API_KEY;
-    if (apiKey && config.provider === 'claude') {
-      this.client = new Anthropic({ apiKey });
+    this.defaultMaxTokens = config.maxTokens ?? 1024;
+
+    // Support legacy single-provider config
+    const providerConfigs = config.providers?.length
+      ? config.providers
+      : this.buildLegacyProviders(config);
+
+    for (const pc of providerConfigs) {
+      this.providers.push(this.initProvider(pc));
     }
+
+    // Sort by priority (lower = preferred)
+    this.providers.sort((a, b) => a.config.priority - b.config.priority);
+
+    this.logStatus();
   }
 
   /**
-   * Check if AI is available (Claude API key configured).
+   * Convert old-style config to new providers array.
+   */
+  private buildLegacyProviders(config: AIConfig): ProviderConfig[] {
+    const providers: ProviderConfig[] = [];
+
+    const anthropicKey = config.apiKey || process.env.ANTHROPIC_API_KEY;
+    if (anthropicKey) {
+      providers.push({
+        name: 'claude',
+        apiKey: anthropicKey,
+        enabled: true,
+        priority: 1,
+        models: { fast: 'claude-haiku-4-5-20251001', smart: config.model || 'claude-sonnet-4-6' },
+      });
+    }
+
+    const openaiKey = process.env.OPENAI_API_KEY;
+    if (openaiKey) {
+      providers.push({
+        name: 'openai',
+        apiKey: openaiKey,
+        enabled: true,
+        priority: 2,
+        models: { fast: 'gpt-4o-mini', smart: 'gpt-4o' },
+      });
+    }
+
+    return providers;
+  }
+
+  private initProvider(config: ProviderConfig): ProviderState {
+    const apiKey = config.apiKey
+      || (config.name === 'claude' ? process.env.ANTHROPIC_API_KEY : undefined)
+      || (config.name === 'openai' ? process.env.OPENAI_API_KEY : undefined);
+
+    let client: Anthropic | OpenAI | null = null;
+
+    if (apiKey && config.enabled) {
+      if (config.name === 'claude') {
+        client = new Anthropic({ apiKey });
+      } else if (config.name === 'openai') {
+        client = new OpenAI({ apiKey });
+      }
+    }
+
+    return {
+      config: { ...config, apiKey },
+      client,
+      type: config.name,
+      available: client !== null,
+      consecutiveErrors: 0,
+      cooldownUntil: 0,
+    };
+  }
+
+  private logStatus(): void {
+    const active = this.providers.filter(p => p.available);
+    if (active.length === 0) {
+      console.log('AI Engine: No providers configured — set ANTHROPIC_API_KEY and/or OPENAI_API_KEY');
+    } else {
+      const names = active.map(p => `${p.type} (priority ${p.config.priority})`).join(', ');
+      console.log(`AI Engine: ${active.length} provider(s) active — ${names}`);
+      console.log(`AI Engine: Auto-failover ${active.length > 1 ? 'enabled' : 'disabled (single provider)'}`);
+    }
+  }
+
+  // ─── Provider Selection ──────────────────────────────
+
+  /**
+   * Get available providers in priority order, skipping those on cooldown.
+   */
+  private getAvailableProviders(): ProviderState[] {
+    const now = Date.now();
+    return this.providers.filter(p => p.available && p.client && now >= p.cooldownUntil);
+  }
+
+  /**
+   * Mark a provider as temporarily failed. After 3 consecutive errors,
+   * it enters a 60-second cooldown before being retried.
+   */
+  private markProviderError(provider: ProviderState, error: unknown): void {
+    provider.consecutiveErrors++;
+    const isRateLimit = this.isRateLimitError(error);
+    const isAuthError = this.isAuthError(error);
+
+    if (isAuthError) {
+      // Permanent failure — disable provider
+      provider.available = false;
+      console.error(`AI Engine: ${provider.type} disabled — invalid API key`);
+    } else if (isRateLimit || provider.consecutiveErrors >= 3) {
+      // Cooldown: rate limit = 60s, other errors = 30s
+      const cooldownMs = isRateLimit ? 60_000 : 30_000;
+      provider.cooldownUntil = Date.now() + cooldownMs;
+      console.warn(`AI Engine: ${provider.type} on cooldown for ${cooldownMs / 1000}s (${isRateLimit ? 'rate limited' : 'consecutive errors'})`);
+    }
+  }
+
+  private markProviderSuccess(provider: ProviderState): void {
+    provider.consecutiveErrors = 0;
+  }
+
+  private isRateLimitError(error: unknown): boolean {
+    if (error && typeof error === 'object') {
+      const e = error as Record<string, unknown>;
+      return e['status'] === 429 || (typeof e['message'] === 'string' && e['message'].includes('rate'));
+    }
+    return false;
+  }
+
+  private isAuthError(error: unknown): boolean {
+    if (error && typeof error === 'object') {
+      const e = error as Record<string, unknown>;
+      return e['status'] === 401 || e['status'] === 403;
+    }
+    return false;
+  }
+
+  // ─── Core Call With Failover ─────────────────────────
+
+  /**
+   * Execute an AI call with automatic failover across providers.
+   */
+  private async callWithFailover(
+    tier: TaskTier,
+    callFn: (provider: ProviderState, model: string) => Promise<string>
+  ): Promise<string> {
+    const available = this.getAvailableProviders();
+    if (available.length === 0) {
+      return '[AI not configured — set ANTHROPIC_API_KEY and/or OPENAI_API_KEY]';
+    }
+
+    for (const provider of available) {
+      const model = tier === 'fast' ? provider.config.models.fast : provider.config.models.smart;
+      try {
+        const result = await callFn(provider, model);
+        this.markProviderSuccess(provider);
+        return result;
+      } catch (error) {
+        console.warn(`AI Engine: ${provider.type} (${model}) failed, trying next provider...`, error);
+        this.markProviderError(provider, error);
+      }
+    }
+
+    return '[AI error — all providers unavailable, please try again later]';
+  }
+
+  // ─── Provider-Specific Calls ─────────────────────────
+
+  private async claudeChat(
+    client: Anthropic,
+    model: string,
+    systemPrompt: string | undefined,
+    userMessage: string,
+    maxTokens: number
+  ): Promise<string> {
+    const response = await client.messages.create({
+      model,
+      max_tokens: maxTokens,
+      ...(systemPrompt ? { system: systemPrompt } : {}),
+      messages: [{ role: 'user', content: userMessage }],
+    });
+    const textBlock = response.content.find(b => b.type === 'text');
+    return textBlock?.text ?? '';
+  }
+
+  private async openaiChat(
+    client: OpenAI,
+    model: string,
+    systemPrompt: string | undefined,
+    userMessage: string,
+    maxTokens: number
+  ): Promise<string> {
+    const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [];
+    if (systemPrompt) {
+      messages.push({ role: 'system', content: systemPrompt });
+    }
+    messages.push({ role: 'user', content: userMessage });
+
+    const response = await client.chat.completions.create({
+      model,
+      max_tokens: maxTokens,
+      messages,
+    });
+    return response.choices[0]?.message?.content ?? '';
+  }
+
+  private async providerChat(
+    provider: ProviderState,
+    model: string,
+    systemPrompt: string | undefined,
+    userMessage: string,
+    maxTokens: number
+  ): Promise<string> {
+    if (provider.type === 'claude') {
+      return this.claudeChat(provider.client as Anthropic, model, systemPrompt, userMessage, maxTokens);
+    } else {
+      return this.openaiChat(provider.client as OpenAI, model, systemPrompt, userMessage, maxTokens);
+    }
+  }
+
+  // ─── Public API ──────────────────────────────────────
+
+  /**
+   * Check if any AI provider is available.
    */
   get isAvailable(): boolean {
-    return this.client !== null;
+    return this.getAvailableProviders().length > 0;
   }
 
   /**
-   * Text completion using Claude API.
+   * Get a summary of provider status (for health checks / dashboard).
    */
-  async complete(prompt: string, options?: { maxTokens?: number; temperature?: number }): Promise<string> {
-    if (!this.client) {
-      return `[AI not configured — set ANTHROPIC_API_KEY]`;
-    }
+  getProviderStatus(): Array<{ name: string; available: boolean; onCooldown: boolean; priority: number }> {
+    const now = Date.now();
+    return this.providers.map(p => ({
+      name: p.type,
+      available: p.available,
+      onCooldown: now < p.cooldownUntil,
+      priority: p.config.priority,
+    }));
+  }
 
-    try {
-      const response = await this.client.messages.create({
-        model: this.config.model,
-        max_tokens: options?.maxTokens ?? this.config.maxTokens ?? 1024,
-        messages: [{ role: 'user', content: prompt }],
-      });
+  /**
+   * Text completion. Uses the 'fast' tier by default.
+   */
+  async complete(
+    prompt: string,
+    options?: { maxTokens?: number; temperature?: number; tier?: TaskTier }
+  ): Promise<string> {
+    const tier = options?.tier ?? 'fast';
+    const maxTokens = options?.maxTokens ?? this.defaultMaxTokens;
 
-      const textBlock = response.content.find(b => b.type === 'text');
-      return textBlock?.text ?? '';
-    } catch (error) {
-      console.error('AIEngine.complete error:', error);
-      return `[AI error — please try again]`;
-    }
+    return this.callWithFailover(tier, (provider, model) =>
+      this.providerChat(provider, model, undefined, prompt, maxTokens)
+    );
   }
 
   /**
    * Chat-style completion with a system prompt and user message.
-   * This is the primary method agents use for generating smart responses.
+   * This is the primary method agents use for generating responses.
+   * Defaults to the 'smart' tier for quality responses.
    */
   async chat(
     systemPrompt: string,
     userMessage: string,
-    options?: { maxTokens?: number; temperature?: number }
+    options?: { maxTokens?: number; temperature?: number; tier?: TaskTier }
   ): Promise<string> {
-    if (!this.client) {
-      return '';
-    }
+    const tier = options?.tier ?? 'smart';
+    const maxTokens = options?.maxTokens ?? this.defaultMaxTokens;
 
-    try {
-      const response = await this.client.messages.create({
-        model: this.config.model,
-        max_tokens: options?.maxTokens ?? this.config.maxTokens ?? 1024,
-        system: systemPrompt,
-        messages: [{ role: 'user', content: userMessage }],
-      });
-
-      const textBlock = response.content.find(b => b.type === 'text');
-      return textBlock?.text ?? '';
-    } catch (error) {
-      console.error('AIEngine.chat error:', error);
-      return '';
-    }
+    return this.callWithFailover(tier, (provider, model) =>
+      this.providerChat(provider, model, systemPrompt, userMessage, maxTokens)
+    );
   }
 
   /**
    * Structured completion — returns parsed JSON.
+   * Uses 'fast' tier since extraction is straightforward.
    */
   async completeStructured<T>(prompt: string, schema: string): Promise<T> {
-    const raw = await this.complete(`${prompt}\n\nRespond with valid JSON matching this schema: ${schema}`);
+    const raw = await this.complete(
+      `${prompt}\n\nRespond with valid JSON matching this schema: ${schema}`,
+      { tier: 'fast' }
+    );
     return JSON.parse(raw) as T;
   }
 
@@ -140,23 +384,29 @@ export class AIEngine {
    * Generate embeddings for semantic search.
    */
   async embed(text: string): Promise<EmbeddingResult> {
+    // TODO: Use OpenAI embeddings API when available (much cheaper than Claude for this)
     return {
       vector: new Array(1024).fill(0).map(() => Math.random()),
-      model: this.config.model,
+      model: 'stub',
     };
   }
 
   /**
    * Classify text into categories.
+   * Uses 'fast' tier — classification doesn't need heavy reasoning.
    */
-  async classify(text: string, categories: string[]): Promise<{ category: string; confidence: number }> {
+  async classify(
+    text: string,
+    categories: string[]
+  ): Promise<{ category: string; confidence: number }> {
     const prompt = `Classify this text into one of these categories: ${categories.join(', ')}\n\nText: "${text}"\n\nRespond with ONLY the category name, nothing else.`;
-    const result = await this.complete(prompt);
+    const result = await this.complete(prompt, { tier: 'fast' });
     return { category: result.trim(), confidence: 0.85 };
   }
 
   /**
    * Analyze a user message and extract structured intent.
+   * Pure keyword-based — free, no API call needed.
    */
   analyzeIntent(message: string): UserIntent {
     const lower = message.toLowerCase();
@@ -201,6 +451,8 @@ export class AIEngine {
       confidence,
     };
   }
+
+  // ─── Intent Helpers (unchanged) ──────────────────────
 
   private extractPrimaryTopic(lower: string, domain: string): string {
     const keywords = DOMAIN_KEYWORDS[domain] || [];
