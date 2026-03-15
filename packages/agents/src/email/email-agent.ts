@@ -606,7 +606,7 @@ export class EmailAgent extends BaseAgent {
 
       const result = await this.extractPdfAsync(pdfBuffer, password);
 
-      if (result.error === 'password_required') {
+      if (result.error === 'password_required' || result.error === 'incorrect_password') {
         // Try to get the hint if we don't have one yet
         let hint = pendingData.passwordHint;
         if (!hint && messageId) {
@@ -614,13 +614,13 @@ export class EmailAgent extends BaseAgent {
             const emailData = await context.fetchEmailBody('gmail', messageId);
             if (emailData?.passwordHint) {
               hint = emailData.passwordHint;
-              // Update pending data with the discovered hint
               context.remember('pending_statement', { ...pendingData, passwordHint: hint }, 'context');
             }
           } catch { /* ignore */ }
         }
 
         let retryText = `**Incorrect password.** The PDF couldn't be opened with that password.\n\n`;
+        retryText += `_Debug: error="${result.error}", password length=${password.length}_\n\n`;
         if (hint) {
           retryText += `From the email: **${hint}**\n\n`;
           retryText += `Please try again with the correct format.`;

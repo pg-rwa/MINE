@@ -209,13 +209,40 @@ export abstract class BaseAgent implements IAgent {
 
       let doc: any;
       try {
+        console.log(`[PDF] extractPdfAsync called, buffer size: ${buffer.length}, password provided: ${!!password}, password length: ${password?.length || 0}`);
         const task = pdfjsLib.getDocument(docOptions);
+
+        // pdfjs v2 uses onPassword callback for password-protected PDFs.
+        // When a password is provided in the source options, pdfjs tries it first.
+        // If it fails (or for some encryption types), it calls onPassword.
+        // We supply the password via callback as well, for maximum compatibility.
+        let passwordAttempted = false;
+        task.onPassword = (updatePassword: (pwd: string) => void, reason: number) => {
+          // reason: 1 = need password (first time), 2 = incorrect password
+          console.log(`[PDF] onPassword callback triggered, reason: ${reason}, password provided: ${!!password}`);
+          if (password && !passwordAttempted) {
+            passwordAttempted = true;
+            updatePassword(password);
+          } else {
+            // No password or already tried — reject by providing empty string
+            // which will cause pdfjs to throw PasswordException
+            updatePassword('');
+          }
+        };
+
         doc = await task.promise;
+        console.log(`[PDF] Document opened successfully, pages: ${doc.numPages}`);
       } catch (err: any) {
         const errMsg = (err?.message || String(err)).toLowerCase();
+        const errCode = err?.code;
+        console.error(`[PDF] getDocument error: name=${err?.name}, code=${errCode}, message=${err?.message}`);
+        // pdfjs PasswordException codes: 1 = need password, 2 = incorrect password
         if (errMsg.includes('password') || errMsg.includes('encrypted') ||
             errMsg.includes('passwordexception') || errMsg.includes('incorrect password') ||
             (err?.name === 'PasswordException')) {
+          if (errCode === 2 || errMsg.includes('incorrect')) {
+            return { text: '', pages: 0, error: 'incorrect_password' };
+          }
           return { text: '', pages: 0, error: 'password_required' };
         }
         throw err;
