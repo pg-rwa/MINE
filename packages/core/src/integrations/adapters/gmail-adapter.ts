@@ -148,6 +148,20 @@ export class GmailAdapter implements IntegrationAdapter {
   }
 
   /**
+   * Fetch the body text and password hint for a specific Gmail message.
+   * Useful when stored data is stale and we need fresh hint detection.
+   */
+  async fetchEmailBody(
+    accessToken: string,
+    messageId: string
+  ): Promise<{ body: string; passwordHint: string | null }> {
+    const msg = await this.getMessage(accessToken, messageId);
+    const body = this.extractBody(msg.payload);
+    const passwordHint = this.detectPasswordHint(body);
+    return { body, passwordHint };
+  }
+
+  /**
    * Download a specific attachment from a Gmail message.
    * Returns the raw attachment data as a Buffer.
    */
@@ -365,36 +379,55 @@ export class GmailAdapter implements IntegrationAdapter {
   }
 
   private detectPasswordHint(body: string): string | null {
-    // Try multiple patterns — banks use many different phrasings.
+    if (!body || body.length < 5) return null;
+
+    // Try specific patterns first — banks use many different phrasings.
     const patterns: RegExp[] = [
       // "password is your DOB in DDMMYYYY"
       /password\s*(?:is|:)\s*(.{5,120})/i,
       // "protected with/by..."
       /protected\s*(?:with|by|using)\s*(.{5,120})/i,
-      // "to open/view this pdf/document, enter..."
-      /to\s+(?:open|view)\s+(?:this|the|your)?\s*(?:pdf|file|attachment|statement|document)\s*[,:]\s*(.{5,120})/i,
-      // SIB style: "to view the document, enter your date of birth..."
-      /to\s+view\s+(?:the\s+)?(?:attached\s+)?document\s*[,:]\s*(.{5,120})/i,
-      // "enter your date of birth within the following format "DDMMYY""
-      /enter\s+your\s+(?:date\s+of\s+birth|dob|password)[\s,]+(?:within\s+)?(?:the\s+)?(?:following\s+)?format\s*["""]?([^"""\n]{3,80})/i,
+      // "to open/view this pdf/document/statement, enter/use..."
+      /to\s+(?:open|view|access|read)\s+(?:this|the|your|attached)?\s*(?:pdf|file|attachment|statement|document|e-?statement)\s*[,:\s]+(?:please\s+)?(?:enter|use|type|key\s+in)\s+(.{5,120})/i,
+      // "to view the attached document..."
+      /to\s+(?:view|open|access|read)\s+(?:the\s+)?(?:attached\s+)?(?:document|statement|file|pdf)\s*[,:]\s*(.{5,120})/i,
+      // "enter your date of birth / DOB / password ... format"
+      /(?:enter|use|type|key\s+in)\s+(?:your\s+)?(?:date\s+of\s+birth|dob|password)[\s,]+(?:in\s+)?(?:the\s+)?(?:following\s+)?(?:format\s*)?["""]?([^"""\n]{3,80})/i,
       // "secured with a password" — grab the next sentence
       /secured?\s+with\s+a?\s*password[.\s]+([^.]{5,120})/i,
+      // "please use your date of birth..."
+      /please\s+(?:use|enter|type)\s+(?:your\s+)?(.{5,100})/i,
+      // "kindly use/enter..."
+      /kindly\s+(?:use|enter|type)\s+(?:your\s+)?(.{5,100})/i,
     ];
 
     for (const pattern of patterns) {
       const match = body.match(pattern);
-      if (match) return match[1].trim().replace(/\.$/, '').slice(0, 150);
+      if (match) {
+        const hint = match[1].trim().replace(/\.$/, '').slice(0, 150);
+        if (hint.length >= 5) return hint;
+      }
     }
 
     // Look for date format strings like DDMMYY or DDMMYYYY anywhere in the body
-    const formatMatch = body.match(/[""]?(DD\s*MM\s*YY(?:YY)?)[""]?/i);
+    const formatMatch = body.match(/[""\u201C\u201D]?(DD\s*[-/]?\s*MM\s*[-/]?\s*YY(?:YY)?)[""\u201C\u201D]?/i);
     if (formatMatch) {
-      const format = formatMatch[1].replace(/\s/g, '');
-      const exampleMatch = body.match(/(?:example|e\.?g\.?)\s*[:(]\s*(\d{4,10})/i);
+      const format = formatMatch[1].replace(/[\s\-\/]/g, '');
+      const exampleMatch = body.match(/(?:example|e\.?g\.?|eg)\s*[:(]\s*(\d{4,10})/i);
       if (exampleMatch) {
         return `Date of birth in ${format} format (Example: ${exampleMatch[1]})`;
       }
       return `Date of birth in ${format} format`;
+    }
+
+    // Broad fallback: any mention of "date of birth" or "DOB" near the word "password" or "open" or "view"
+    if (/date\s+of\s+birth|dob/i.test(body) && /password|open|view|access|enter|format/i.test(body)) {
+      // Try to extract the format mentioned near DOB
+      const dobContext = body.match(/(?:date\s+of\s+birth|dob)\s*(?:in\s+)?(?:the\s+)?(?:format\s+)?["""]?(\w{4,12})["""]?/i);
+      if (dobContext && /^[DMYdmy\d]+$/.test(dobContext[1])) {
+        return `Date of birth in ${dobContext[1].toUpperCase()} format`;
+      }
+      return 'Your Date of Birth (check the email for the exact format)';
     }
 
     return null;
@@ -518,10 +551,11 @@ export class GmailAdapter implements IntegrationAdapter {
       return raw;
     }
     if (payload.parts) {
-      // Prefer text/plain
+      // Prefer text/plain — but only if it has actual content (not just whitespace)
       for (const part of payload.parts) {
         if (part.mimeType === 'text/plain' && part.body?.data) {
-          return Buffer.from(part.body.data, 'base64').toString('utf-8');
+          const text = Buffer.from(part.body.data, 'base64').toString('utf-8');
+          if (text.trim().length > 0) return text;
         }
       }
       // Fall back to text/html — strip tags to get readable text

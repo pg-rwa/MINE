@@ -85,6 +85,9 @@ export interface AgentContext {
 
   /** Download an attachment from a connected integration (e.g., Gmail PDF) */
   downloadAttachment(integrationId: string, messageId: string, attachmentId: string): Promise<Buffer | null>;
+
+  /** Fetch email body text and password hint for a specific message */
+  fetchEmailBody(integrationId: string, messageId: string): Promise<{ body: string; passwordHint: string | null } | null>;
 }
 
 interface RuntimeEvents {
@@ -471,6 +474,17 @@ export class AgentRuntime extends EventEmitter<RuntimeEvents> {
         if (!conn) return null;
         try {
           return await this.integrations.downloadAttachment(conn.id, messageId, attachmentId);
+        } catch {
+          return null;
+        }
+      },
+
+      fetchEmailBody: async (integrationId: string, messageId: string): Promise<{ body: string; passwordHint: string | null } | null> => {
+        if (!this.integrations) return null;
+        const conn = this.integrations.findUserConnection(userId, integrationId);
+        if (!conn) return null;
+        try {
+          return await this.integrations.fetchEmailBody(conn.id, messageId);
         } catch {
           return null;
         }

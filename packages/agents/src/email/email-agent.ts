@@ -332,23 +332,21 @@ export class EmailAgent extends BaseAgent {
     const keywords = this.extractSearchKeywords(content);
     keywords.push('statement');
 
-    // Search vault first, then live — use AND logic
-    const vaultEntries = this.safeGetVault(context, 'transactions');
-    const { entityKws } = this.splitKeywordsByRole(keywords);
-    const statementEntries = vaultEntries.filter(e => {
-      if (e.data.type !== 'statement') return false;
-      const text = JSON.stringify(e.data).toLowerCase();
-      return entityKws.length === 0 || entityKws.some(k => text.includes(k.toLowerCase()));
-    });
+    // Always search Gmail fresh for statements — vault entries may be stale
+    // (e.g., missing passwordHint, attachmentIds from older parsing code)
+    const liveResults = await context.searchIntegration('gmail', keywords);
+    let allResults: Array<{ category: string; key: string; data: Record<string, unknown> }> = liveResults;
 
-    // Combine vault + live results
-    let allResults: Array<{ category: string; key: string; data: Record<string, unknown> }> = [];
-
-    if (statementEntries.length > 0) {
+    // Fall back to vault only if Gmail returns nothing
+    if (allResults.length === 0) {
+      const vaultEntries = this.safeGetVault(context, 'transactions');
+      const { entityKws } = this.splitKeywordsByRole(keywords);
+      const statementEntries = vaultEntries.filter(e => {
+        if (e.data.type !== 'statement') return false;
+        const text = JSON.stringify(e.data).toLowerCase();
+        return entityKws.length === 0 || entityKws.some(k => text.includes(k.toLowerCase()));
+      });
       allResults = statementEntries.map(e => ({ category: e.category, key: e.key, data: e.data }));
-    } else {
-      const liveResults = await context.searchIntegration('gmail', keywords);
-      allResults = liveResults;
     }
 
     if (allResults.length === 0) {
@@ -432,14 +430,18 @@ export class EmailAgent extends BaseAgent {
     let messageId = d.messageId as string | undefined;
     let attachmentIds = d.attachmentIds as Array<{ id: string; filename: string; mimeType: string }> | undefined;
 
-    // If we don't have messageId/attachmentIds, re-fetch from Gmail using keywords
-    // This handles entries that were parsed before we started storing messageId
-    if (!messageId || !attachmentIds || attachmentIds.length === 0) {
+    // Always re-fetch from Gmail to get fresh data (messageId, attachmentIds, passwordHint)
+    // Vault entries may be stale from older parsing code
+    {
       const freshResults = await context.searchIntegration('gmail', searchData.keywords);
       const freshMatch = freshResults.find(r => r.key === key);
       if (freshMatch) {
         messageId = freshMatch.data.messageId as string | undefined;
         attachmentIds = freshMatch.data.attachmentIds as Array<{ id: string; filename: string; mimeType: string }> | undefined;
+        // Update passwordHint from fresh data
+        if (freshMatch.data.passwordHint) {
+          d.passwordHint = freshMatch.data.passwordHint;
+        }
       }
     }
 
@@ -471,7 +473,19 @@ export class EmailAgent extends BaseAgent {
       const parseResult = await this.extractPdfAsync(pdfBuffer, undefined);
 
       if (parseResult.error === 'password_required') {
-        // PDF is encrypted — ask for password
+        // PDF is encrypted — detect password hint
+        let hint = d.passwordHint as string | undefined;
+
+        // If we don't have a hint yet, fetch the email body directly and detect it
+        if (!hint && messageId) {
+          try {
+            const emailData = await context.fetchEmailBody('gmail', messageId);
+            if (emailData?.passwordHint) {
+              hint = emailData.passwordHint;
+            }
+          } catch { /* ignore — we'll show generic hints */ }
+        }
+
         context.remember('pending_statement', {
           statementKey: key,
           bankName,
@@ -479,11 +493,9 @@ export class EmailAgent extends BaseAgent {
           messageId,
           attachmentId: pdfAttachment.id,
           filename: pdfAttachment.filename,
-          passwordHint: (d.passwordHint as string) || undefined,
+          passwordHint: hint || undefined,
           waitingForPassword: true,
         }, 'context');
-
-        const hint = d.passwordHint as string | undefined;
 
         let pwText = `**${label}**\n📎 ${pdfAttachment.filename}\n\n`;
         pwText += `🔒 **This PDF is password-protected.**\n\n`;
@@ -595,9 +607,22 @@ export class EmailAgent extends BaseAgent {
       const result = await this.extractPdfAsync(pdfBuffer, password);
 
       if (result.error === 'password_required') {
+        // Try to get the hint if we don't have one yet
+        let hint = pendingData.passwordHint;
+        if (!hint && messageId) {
+          try {
+            const emailData = await context.fetchEmailBody('gmail', messageId);
+            if (emailData?.passwordHint) {
+              hint = emailData.passwordHint;
+              // Update pending data with the discovered hint
+              context.remember('pending_statement', { ...pendingData, passwordHint: hint }, 'context');
+            }
+          } catch { /* ignore */ }
+        }
+
         let retryText = `**Incorrect password.** The PDF couldn't be opened with that password.\n\n`;
-        if (pendingData.passwordHint) {
-          retryText += `From the email: **${pendingData.passwordHint}**\n\n`;
+        if (hint) {
+          retryText += `From the email: **${hint}**\n\n`;
           retryText += `Please try again with the correct format.`;
         } else {
           retryText += `Try a different format:\n`;

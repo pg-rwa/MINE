@@ -262,6 +262,24 @@ export class IntegrationGateway extends EventEmitter<GatewayEvents> {
   }
 
   /**
+   * Fetch email body text and password hint for a specific message.
+   */
+  async fetchEmailBody(connectionId: string, messageId: string): Promise<{ body: string; passwordHint: string | null } | null> {
+    const connection = this.connections.get(connectionId);
+    if (!connection) return null;
+
+    const adapter = this.adapters.get(connection.integrationId);
+    if (!adapter || !connection.tokens) return null;
+
+    if ('fetchEmailBody' in adapter && typeof (adapter as any).fetchEmailBody === 'function') {
+      const tokens = await this.ensureFreshTokens(connection, adapter);
+      return (adapter as any).fetchEmailBody(tokens.accessToken, messageId);
+    }
+
+    return null;
+  }
+
+  /**
    * Disconnect an integration.
    */
   disconnect(connectionId: string): void {
