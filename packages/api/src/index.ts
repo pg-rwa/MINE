@@ -127,6 +127,23 @@ async function main() {
   } else {
     console.log('AI Engine: Not configured — set ANTHROPIC_API_KEY and/or OPENAI_API_KEY for smart responses');
   }
+
+  // Graceful shutdown — handle SIGTERM from Railway/Docker/K8s
+  // Without this, every deploy shows red "command failed" errors in logs
+  const shutdown = async (signal: string) => {
+    console.log(`Received ${signal}, shutting down gracefully...`);
+    try {
+      await app.close();
+      persistence.close();
+      console.log('MINE shut down cleanly.');
+    } catch (err) {
+      console.error('Error during shutdown:', err);
+    }
+    process.exit(0);
+  };
+
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
 }
 
 main().catch((err) => {
