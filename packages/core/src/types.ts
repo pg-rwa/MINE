@@ -95,7 +95,7 @@ export const AgentResponseSchema = z.object({
   actions: z
     .array(
       z.object({
-        type: z.enum(['show_widget', 'navigate', 'confirm_action', 'request_permission', 'notify']),
+        type: z.enum(['show_widget', 'navigate', 'confirm_action', 'request_permission', 'notify', 'select_item']),
         payload: z.record(z.unknown()),
       })
     )

@@ -421,6 +421,30 @@ const App = {
       // Handle actions
       let actionsHtml = '';
       if (response.actions) {
+        // Group select_item actions into a clickable result list
+        const selectItems = response.actions.filter(a => a.type === 'select_item');
+        if (selectItems.length > 0) {
+          actionsHtml += '<div class="select-item-list">';
+          selectItems.forEach((action, idx) => {
+            const p = action.payload;
+            const label = esc(p.label || `Item ${idx + 1}`);
+            const subtitle = p.subtitle ? `<span class="select-item-subtitle">${esc(p.subtitle)}</span>` : '';
+            const icon = p.icon ? esc(p.icon) : '📄';
+            const msg = esc(p.message || `open:${p.key || idx}`);
+            actionsHtml += `
+              <div class="select-item" onclick="App.useSuggestion('${msg}')">
+                <span class="select-item-icon">${icon}</span>
+                <div class="select-item-content">
+                  <span class="select-item-label">${label}</span>
+                  ${subtitle}
+                </div>
+                <span class="select-item-arrow">›</span>
+              </div>
+            `;
+          });
+          actionsHtml += '</div>';
+        }
+
         response.actions.forEach(action => {
           if (action.type === 'request_permission') {
             actionsHtml += `

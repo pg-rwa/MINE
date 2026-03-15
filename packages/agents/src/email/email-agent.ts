@@ -46,10 +46,17 @@ export class EmailAgent extends BaseAgent {
     const content = message.content.toLowerCase();
     const intent = this.analyzeIntent(message, context);
 
-    // Check if we're waiting for a password response for a pending statement
+    // ─── Handle user clicking a search result ("open:KEY") ───
+    const openMatch = message.content.match(/^open:(.+)$/);
+    if (openMatch) {
+      const key = openMatch[1];
+      return this.handleResultSelection(key, context);
+    }
+
+    // ─── Handle password input for a pending statement ───
     const pendingStmt = context.recall('context').find(m => m.key === 'pending_statement' && (m.value as any)?.waitingForPassword);
     if (pendingStmt) {
-      const pendingData = pendingStmt.value as { statementKey: string; bankName?: string; keywords: string[] };
+      const pendingData = pendingStmt.value as { statementKey: string; bankName?: string; keywords: string[]; messageId?: string; attachmentId?: string; filename?: string };
       // User might be providing a password (short input, not a question/command)
       const looksLikePassword = content.length <= 30 && !content.includes('skip') && !content.includes('show') &&
         !content.includes('search') && !content.includes('help') && !/^(yes|no|ok|cancel)$/i.test(content.trim());
@@ -232,29 +239,38 @@ export class EmailAgent extends BaseAgent {
     const liveResults = await context.searchIntegration('gmail', keywords);
 
     if (liveResults.length > 0) {
-      // Check for password-protected statements
-      const statements = liveResults.filter(r => r.data.type === 'statement' && r.data.passwordProtected);
-      if (statements.length > 0) {
-        return this.handlePasswordProtectedStatement(statements, keywords, context);
+      // Store results for later selection
+      context.remember('search_results', {
+        results: liveResults.slice(0, 15),
+        keywords,
+        bankName: this.extractBankNameFromKeywords(keywords),
+      }, 'context');
+
+      // Build clickable result items
+      const actions: Array<{ type: 'select_item'; payload: Record<string, unknown> }> = [];
+      for (let i = 0; i < Math.min(liveResults.length, 15); i++) {
+        const r = liveResults[i];
+        const d = r.data;
+        const dateStr = d.date ? new Date(d.date as string).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '';
+        const hasPdf = d.hasAttachment && (d.attachments as any[])?.some((a: any) =>
+          a.name?.toLowerCase().endsWith('.pdf') || a.mimeType === 'application/pdf');
+        const icon = d.type === 'credit' ? '🟢' : d.type === 'debit' ? '🔴' : hasPdf ? '📄' : '📧';
+        const label = (d.description || d.name || d.subject || r.key) as string;
+        const amountStr = d.amount ? `₹${typeof d.amount === 'number' ? (d.amount as number).toLocaleString() : d.amount}` : '';
+        const subtitle = [dateStr, amountStr, d.source as string].filter(Boolean).join(' · ');
+
+        actions.push({
+          type: 'select_item',
+          payload: { key: r.key, label, subtitle, icon, message: `open:${r.key}` },
+        });
       }
 
-      let text = `**Found ${liveResults.length} result(s) searching Gmail for "${keywords.join(', ')}":**\n\n`;
-      for (const entry of liveResults.slice(0, 10)) {
-        const d = entry.data;
-        const emoji = d.type === 'credit' ? '🟢' : d.type === 'debit' ? '🔴' : '📧';
-        text += `${emoji} **${d.description || d.name || d.subject || entry.key}**\n`;
-        if (d.amount) text += `   Amount: ₹${typeof d.amount === 'number' ? (d.amount as number).toLocaleString() : d.amount}`;
-        if (d.date) text += ` • ${new Date(d.date as string).toLocaleDateString()}`;
-        text += '\n\n';
-      }
-
-      return this.respondWithContext(intent, context, text, {
-        suggestions: ['Search more', 'Show all transactions', 'Summarize inbox'],
-      });
+      const text = `Found **${liveResults.length} result(s)** for "${keywords.join(', ')}". Tap to open:`;
+      return this.respond(text, { actions });
     }
 
     return this.respond(
-      `No results found in Gmail for "${keywords.join(', ')}". I searched your emails directly but couldn't find matching content.\n\nTry different keywords or check if those emails are in a different account.`,
+      `No results found in Gmail for "${keywords.join(', ')}". Try different keywords or check if those emails are in a different account.`,
       { suggestions: ['Try different search', 'Summarize inbox'] }
     );
   }
@@ -265,19 +281,34 @@ export class EmailAgent extends BaseAgent {
     intent: ReturnType<typeof this.analyzeIntent>,
     context: AgentContext
   ): AgentResponse {
-    let text = `**Found ${matches.length} result(s) for "${keywords.join(', ')}":**\n\n`;
-    for (const entry of matches.slice(0, 10)) {
-      const d = entry.data;
-      const emoji = d.type === 'credit' ? '🟢' : d.type === 'debit' ? '🔴' : '📧';
-      text += `${emoji} **[${entry.category}]** ${d.description || d.name || d.subject || entry.key}\n`;
-      if (d.amount) text += `   ₹${typeof d.amount === 'number' ? (d.amount as number).toLocaleString() : d.amount}`;
-      if (d.date) text += ` • ${new Date(d.date as string).toLocaleDateString()}`;
-      text += '\n\n';
+    // Store results for later selection
+    const results = matches.slice(0, 15).map(e => ({ category: e.category, key: e.key, data: e.data }));
+    context.remember('search_results', {
+      results,
+      keywords,
+      bankName: this.extractBankNameFromKeywords(keywords),
+    }, 'context');
+
+    // Build clickable result items
+    const actions: Array<{ type: 'select_item'; payload: Record<string, unknown> }> = [];
+    for (const r of results) {
+      const d = r.data;
+      const dateStr = d.date ? new Date(d.date as string).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '';
+      const hasPdf = d.hasAttachment && (d.attachments as any[])?.some((a: any) =>
+        a.name?.toLowerCase().endsWith('.pdf') || a.mimeType === 'application/pdf');
+      const icon = d.type === 'credit' ? '🟢' : d.type === 'debit' ? '🔴' : hasPdf ? '📄' : '📧';
+      const label = (d.description || d.name || d.subject || r.key) as string;
+      const amountStr = d.amount ? `₹${typeof d.amount === 'number' ? (d.amount as number).toLocaleString() : d.amount}` : '';
+      const subtitle = [dateStr, amountStr, `[${r.category}]`].filter(Boolean).join(' · ');
+
+      actions.push({
+        type: 'select_item',
+        payload: { key: r.key, label, subtitle, icon, message: `open:${r.key}` },
+      });
     }
 
-    return this.respondWithContext(intent, context, text, {
-      suggestions: ['Show more details', 'Search more', 'Summarize inbox'],
-    });
+    const text = `Found **${matches.length} result(s)** for "${keywords.join(', ')}". Tap to open:`;
+    return this.respond(text, { actions });
   }
 
   // ─── Statement & Password Handling ──────────────────
@@ -299,119 +330,196 @@ export class EmailAgent extends BaseAgent {
 
     // Extract bank-specific keywords
     const keywords = this.extractSearchKeywords(content);
-    keywords.push('statement'); // Always include 'statement'
+    keywords.push('statement');
 
-    // Search vault first, then live — use AND logic so bank-specific searches don't return unrelated statements
+    // Search vault first, then live — use AND logic
     const vaultEntries = this.safeGetVault(context, 'transactions');
-    const { entityKws, typeKws } = this.splitKeywordsByRole(keywords);
+    const { entityKws } = this.splitKeywordsByRole(keywords);
     const statementEntries = vaultEntries.filter(e => {
       if (e.data.type !== 'statement') return false;
       const text = JSON.stringify(e.data).toLowerCase();
-      const matchesEntity = entityKws.length === 0 || entityKws.some(k => text.includes(k.toLowerCase()));
-      return matchesEntity; // type is already 'statement', no need to re-check
+      return entityKws.length === 0 || entityKws.some(k => text.includes(k.toLowerCase()));
     });
 
+    // Combine vault + live results
+    let allResults: Array<{ category: string; key: string; data: Record<string, unknown> }> = [];
+
     if (statementEntries.length > 0) {
-      return this.handlePasswordProtectedStatement(
-        statementEntries.map(e => ({ category: e.category, key: e.key, data: e.data })),
-        keywords,
-        context
+      allResults = statementEntries.map(e => ({ category: e.category, key: e.key, data: e.data }));
+    } else {
+      const liveResults = await context.searchIntegration('gmail', keywords);
+      allResults = liveResults;
+    }
+
+    if (allResults.length === 0) {
+      return this.respond(
+        `No statements found for "${keywords.join(', ')}". Make sure the statement emails are in your inbox (not trash/spam).`,
+        { suggestions: ['Try different search', 'Show transactions'] }
       );
     }
 
-    // Live search Gmail for statements
-    const liveResults = await context.searchIntegration('gmail', keywords);
-    const statements = liveResults.filter(r => r.data.type === 'statement');
+    // Store results in memory so we can look them up when user clicks one
+    context.remember('search_results', {
+      results: allResults.slice(0, 15),
+      keywords,
+      bankName: this.extractBankNameFromKeywords(keywords),
+    }, 'context');
 
-    if (statements.length > 0) {
-      return this.handlePasswordProtectedStatement(statements, keywords, context);
-    }
+    const bankName = this.extractBankNameFromKeywords(keywords);
 
-    // Found non-statement results
-    if (liveResults.length > 0) {
-      let text = `I didn't find statement PDFs, but found **${liveResults.length} related email(s)** for "${keywords.join(', ')}":\n\n`;
-      for (const entry of liveResults.slice(0, 5)) {
-        text += `📧 **${entry.data.description || entry.data.subject || entry.key}**\n`;
-        if (entry.data.date) text += `   ${new Date(entry.data.date as string).toLocaleDateString()}\n`;
-        text += '\n';
-      }
-      return this.respondWithContext(intent, context, text, {
-        suggestions: ['Search for more', 'Show transactions'],
+    // Build clickable result items
+    const actions: Array<{ type: 'select_item'; payload: Record<string, unknown> }> = [];
+    for (let i = 0; i < Math.min(allResults.length, 15); i++) {
+      const r = allResults[i];
+      const d = r.data;
+      const dateStr = d.date ? new Date(d.date as string).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '';
+      const hasPdf = d.hasAttachment && (d.attachments as any[])?.some((a: any) =>
+        a.name?.toLowerCase().endsWith('.pdf') || a.mimeType === 'application/pdf');
+      const label = (d.description || d.subject || 'Statement') as string;
+      const subtitle = [dateStr, d.source ? `From: ${d.source}` : '', hasPdf ? '📎 PDF attached' : ''].filter(Boolean).join(' · ');
+
+      actions.push({
+        type: 'select_item',
+        payload: {
+          key: r.key,
+          label,
+          subtitle,
+          icon: hasPdf ? '📄' : '📧',
+          message: `open:${r.key}`,
+        },
       });
     }
 
-    return this.respond(
-      `No statements found for "${keywords.join(', ')}". I searched your Gmail but couldn't find matching bank statements.\n\nMake sure the statement emails are in your inbox (not trash/spam).`,
-      { suggestions: ['Try different search', 'Show transactions'] }
-    );
+    let text = `Found **${allResults.length}${bankName ? ' ' + bankName : ''} statement(s)**. Tap one to open it:`;
+
+    return this.respond(text, { actions });
   }
 
-  private handlePasswordProtectedStatement(
-    statements: Array<{ category: string; key: string; data: Record<string, unknown> }>,
-    keywords: string[],
-    context: AgentContext
-  ): AgentResponse {
-    const stmt = statements[0];
-    const bankName = this.extractBankNameFromKeywords(keywords);
-    let text = `**Found ${statements.length} ${bankName ? bankName + ' ' : ''}statement(s)**\n\n`;
+  /**
+   * Handle user clicking on a specific search result.
+   * Downloads the email's PDF attachment, tries to open it.
+   * Only asks for password if the PDF is actually encrypted.
+   */
+  private async handleResultSelection(key: string, context: AgentContext): Promise<AgentResponse> {
+    // Look up the selected result from stored search results
+    const stored = context.recall('context').find(m => m.key === 'search_results');
+    const searchData = stored?.value as { results: Array<{ key: string; data: Record<string, unknown> }>; keywords: string[]; bankName?: string } | undefined;
 
-    for (let i = 0; i < Math.min(statements.length, 3); i++) {
-      const s = statements[i];
-      const idx = statements.length > 1 ? `${i + 1}. ` : '';
-      text += `${idx}📄 **${s.data.description || s.data.subject || 'Bank Statement'}**\n`;
-      if (s.data.date) text += `   Date: ${new Date(s.data.date as string).toLocaleDateString()}\n`;
-      if (s.data.source) text += `   From: ${s.data.source}\n`;
-      if (s.data.hasAttachment) {
-        const attName = (s.data.attachments as any[])?.[0]?.name || 'PDF file';
-        text += `   📎 Attachment: ${attName}\n`;
-      }
-      text += '\n';
-    }
-
-    if (statements.length > 3) {
-      text += `_...and ${statements.length - 3} more statement(s)_\n\n`;
-    }
-
-    // Check if any statement has a PDF attachment — proactively ask for password
-    const hasPdfAttachment = statements.some(s =>
-      s.data.hasAttachment && (
-        s.data.passwordProtected ||
-        (s.data.attachments as any[])?.some((a: any) =>
-          a.name?.toLowerCase().endsWith('.pdf') || a.mimeType === 'application/pdf'
-        )
-      )
-    );
-
-    if (stmt.data.passwordProtected || hasPdfAttachment) {
-      text += `🔒 **This statement PDF is likely password-protected.**\n`;
-      if (stmt.data.passwordHint) {
-        text += `   Hint: *${stmt.data.passwordHint}*\n`;
-      } else {
-        text += `   Common passwords: your date of birth (DDMMYYYY), PAN number, or last 4 digits of account number.\n`;
-      }
-      text += `\n**Please share the password** so I can open and extract the statement details for you.`;
-
-      // Remember that we're waiting for a password
-      context.remember('pending_statement', {
-        statementKey: stmt.key,
-        bankName,
-        keywords,
-        waitingForPassword: true,
-        statementCount: statements.length,
-      }, 'context');
-
-      return this.respond(text, {
-        suggestions: ['Enter password', 'Skip this statement', 'Show other results'],
-        actions: [
-          { type: 'confirm_action', payload: { action: 'request_password', statementKey: stmt.key } },
-        ],
+    if (!searchData) {
+      return this.respond("I don't have those search results anymore. Let me search again.", {
+        suggestions: ['Search statements'],
       });
     }
 
-    text += 'I can extract the details from this statement for you.';
-    return this.respond(text, {
-      suggestions: ['Extract details', 'Show more statements'],
-    });
+    const result = searchData.results.find(r => r.key === key);
+    if (!result) {
+      return this.respond("Couldn't find that result. It may have expired. Let me search again.", {
+        suggestions: ['Search statements'],
+      });
+    }
+
+    const d = result.data;
+    const bankName = searchData.bankName || '';
+    const label = (d.description || d.subject || 'Statement') as string;
+    const dateStr = d.date ? new Date(d.date as string).toLocaleDateString() : '';
+
+    let text = `**Opening: ${label}**\n`;
+    if (dateStr) text += `Date: ${dateStr}\n`;
+    if (d.source) text += `From: ${d.source}\n`;
+
+    // Check if this result has a PDF attachment with messageId/attachmentId
+    const messageId = d.messageId as string | undefined;
+    const attachmentIds = d.attachmentIds as Array<{ id: string; filename: string; mimeType: string }> | undefined;
+    const pdfAttachment = attachmentIds?.find(a =>
+      a.mimeType === 'application/pdf' || a.filename.toLowerCase().endsWith('.pdf')
+    );
+
+    if (!messageId || !pdfAttachment) {
+      // No downloadable PDF — show the email content we have
+      text += '\nThis email doesn\'t have a downloadable PDF attachment. Here\'s what I extracted from the email body:\n\n';
+      const bodyPreview = (d.body as string) || (d.description as string) || 'No content available';
+      text += bodyPreview.slice(0, 1000);
+      return this.respond(text, { suggestions: ['Search for more', 'Show transactions'] });
+    }
+
+    // Download the PDF from Gmail
+    text += `\n📎 Downloading **${pdfAttachment.filename}**...`;
+
+    const gmail = context.checkIntegration('gmail');
+    if (!gmail.connected) {
+      return this.respond(text + '\n\nGmail is disconnected. Please reconnect first.', { suggestions: ['Reconnect Gmail'] });
+    }
+
+    try {
+      const pdfBuffer = await context.downloadAttachment('gmail', messageId, pdfAttachment.id);
+      if (!pdfBuffer) {
+        return this.respond(text + '\n\nFailed to download the PDF. Please try again.', { suggestions: ['Try again'] });
+      }
+
+      // Try to open the PDF WITHOUT a password first
+      const result = await this.extractPdfAsync(pdfBuffer, undefined);
+
+      if (result.error === 'password_required') {
+        // PDF is encrypted — ask for password
+        // Store context so we can retry with the password
+        context.remember('pending_statement', {
+          statementKey: key,
+          bankName,
+          keywords: searchData.keywords,
+          messageId,
+          attachmentId: pdfAttachment.id,
+          filename: pdfAttachment.filename,
+          waitingForPassword: true,
+        }, 'context');
+
+        const hint = d.passwordHint as string | undefined;
+
+        let pwText = `**${label}**\n📎 ${pdfAttachment.filename}\n\n`;
+        pwText += `🔒 **This PDF is password-protected.**\n\n`;
+        if (hint) {
+          pwText += `Hint from email: *${hint}*\n\n`;
+        }
+        pwText += `Common passwords for bank statements:\n`;
+        pwText += `• Date of birth: **DDMMYYYY** (e.g., 15031990)\n`;
+        pwText += `• PAN number (e.g., ABCDE1234F)\n`;
+        pwText += `• Last 4 digits of account number\n\n`;
+        pwText += `**Type the password below** and I'll open it for you.`;
+
+        return this.respond(pwText, {
+          suggestions: ['Skip this one', 'Show other results'],
+        });
+      }
+
+      if (result.error) {
+        return this.respond(text + `\n\nError reading PDF: ${result.error}`, {
+          suggestions: ['Try again', 'Show other results'],
+        });
+      }
+
+      // Success — PDF opened without password
+      const preview = result.text.length > 2000 ? result.text.slice(0, 2000) + '\n\n_...truncated_' : result.text;
+
+      let successText = `**${bankName ? bankName + ' ' : ''}Statement Opened** (${result.pages} page${result.pages !== 1 ? 's' : ''})\n\n`;
+      successText += `📄 **${pdfAttachment.filename}**\n\n`;
+      successText += '```\n' + preview + '\n```\n\n';
+      successText += 'I can analyze this statement — transactions, balances, or any specific details.';
+
+      context.remember(`statement_text_${key}`, {
+        text: result.text,
+        pages: result.pages,
+        bankName,
+        filename: pdfAttachment.filename,
+      }, 'context');
+
+      return this.respond(successText, {
+        suggestions: ['Summarize transactions', 'Show closing balance', 'List all debits', 'Show monthly summary'],
+      });
+
+    } catch (err: any) {
+      return this.respond(text + `\n\nSomething went wrong: ${err?.message || 'Unknown error'}`, {
+        suggestions: ['Try again', 'Show other results'],
+      });
+    }
   }
 
   /**
@@ -432,91 +540,76 @@ export class EmailAgent extends BaseAgent {
    */
   private async handleStatementPasswordAttempt(
     password: string,
-    pendingData: { statementKey: string; bankName?: string; keywords: string[] },
+    pendingData: { statementKey: string; bankName?: string; keywords: string[]; messageId?: string; attachmentId?: string; filename?: string },
     context: AgentContext
   ): Promise<AgentResponse> {
-    // Find the statement in vault
-    const vaultEntries = this.safeGetVault(context, 'transactions');
-    const stmt = vaultEntries.find(e => e.key === pendingData.statementKey);
+    // Use stored messageId/attachmentId from context, or fall back to vault
+    let messageId = pendingData.messageId;
+    let attachmentId = pendingData.attachmentId;
+    let filename = pendingData.filename || 'statement.pdf';
 
-    if (!stmt || !stmt.data.messageId) {
-      // Clear pending state
+    if (!messageId || !attachmentId) {
+      const vaultEntries = this.safeGetVault(context, 'transactions');
+      const stmt = vaultEntries.find(e => e.key === pendingData.statementKey);
+      if (stmt?.data.messageId) {
+        messageId = stmt.data.messageId as string;
+        const attIds = stmt.data.attachmentIds as Array<{ id: string; filename: string; mimeType: string }> | undefined;
+        const pdf = attIds?.find(a => a.mimeType === 'application/pdf' || a.filename.toLowerCase().endsWith('.pdf'));
+        attachmentId = pdf?.id;
+        filename = pdf?.filename || filename;
+      }
+    }
+
+    if (!messageId || !attachmentId) {
       context.remember('pending_statement', { ...pendingData, waitingForPassword: false }, 'context');
       return this.respond(
-        "I couldn't find the statement to open. The data may have expired. Let me search again.",
+        "I couldn't find the statement to open. Let me search again.",
         { suggestions: ['Search statements again'] }
       );
     }
 
-    const messageId = stmt.data.messageId as string;
-    const attachmentIds = stmt.data.attachmentIds as Array<{ id: string; filename: string; mimeType: string }>;
-    const pdfAttachment = attachmentIds?.find(a =>
-      a.mimeType === 'application/pdf' || a.filename.toLowerCase().endsWith('.pdf')
-    );
-
-    if (!pdfAttachment) {
-      context.remember('pending_statement', { ...pendingData, waitingForPassword: false }, 'context');
-      return this.respond(
-        "No PDF attachment found in this email. The statement might be in the email body instead.",
-        { suggestions: ['Show email content', 'Search again'] }
-      );
+    const gmail = context.checkIntegration('gmail');
+    if (!gmail.connected) {
+      return this.respond("Gmail is disconnected. Please reconnect.", { suggestions: ['Reconnect Gmail'] });
     }
 
     try {
-      // Download the PDF from Gmail
-      const gmail = context.checkIntegration('gmail');
-      if (!gmail.connected) {
-        return this.respond("Gmail is disconnected. Please reconnect to download the statement.", { suggestions: ['Reconnect Gmail'] });
-      }
-
-      const pdfBuffer = await context.downloadAttachment('gmail', messageId, pdfAttachment.id);
-
+      const pdfBuffer = await context.downloadAttachment('gmail', messageId, attachmentId);
       if (!pdfBuffer) {
-        return this.respond(
-          "Failed to download the PDF from Gmail. Please try again.",
-          { suggestions: ['Try again', 'Skip'] }
-        );
+        return this.respond("Failed to download the PDF. Please try again.", { suggestions: ['Try again', 'Skip'] });
       }
 
-      // Try to parse the PDF with the provided password
       const result = await this.extractPdfAsync(pdfBuffer, password);
 
       if (result.error === 'password_required') {
         return this.respond(
-          `**Incorrect password.** The PDF couldn't be opened with "${password}".\n\n` +
-          `Please try a different password. Common formats:\n` +
-          `- Date of birth: DDMMYYYY (e.g., 15031990)\n` +
-          `- PAN number (e.g., ABCDE1234F)\n` +
-          `- Last 4 digits of account number`,
-          { suggestions: ['Try another password', 'Skip this statement'] }
+          `**Incorrect password.** The PDF couldn't be opened with that password.\n\n` +
+          `Try a different format:\n` +
+          `• Date of birth: **DDMMYYYY** (e.g., 15031990)\n` +
+          `• PAN number (e.g., ABCDE1234F)\n` +
+          `• Last 4 digits of account number`,
+          { suggestions: ['Skip this statement'] }
         );
       }
 
       if (result.error) {
         context.remember('pending_statement', { ...pendingData, waitingForPassword: false }, 'context');
-        return this.respond(
-          `Error reading the PDF: ${result.error}\n\nThe file might be corrupted or in an unsupported format.`,
-          { suggestions: ['Search for more statements', 'Show transactions'] }
-        );
+        return this.respond(`Error reading the PDF: ${result.error}`, { suggestions: ['Search for more'] });
       }
 
-      // Success! Clear pending state and show extracted content
+      // Success
       context.remember('pending_statement', { ...pendingData, waitingForPassword: false }, 'context');
 
       const bankLabel = pendingData.bankName || 'Bank';
       const preview = result.text.length > 2000 ? result.text.slice(0, 2000) + '\n\n_...truncated_' : result.text;
 
-      let text = `**${bankLabel} Statement Opened Successfully** (${result.pages} page${result.pages !== 1 ? 's' : ''})\n\n`;
-      text += `📄 **${pdfAttachment.filename}**\n\n`;
+      let text = `**${bankLabel} Statement Opened** (${result.pages} page${result.pages !== 1 ? 's' : ''})\n\n`;
+      text += `📄 **${filename}**\n\n`;
       text += '```\n' + preview + '\n```\n\n';
-      text += 'I can analyze this statement for you — transactions, balances, or any specific details.';
+      text += 'I can analyze this statement — transactions, balances, or any specific details.';
 
-      // Store extracted text in memory for follow-up questions
       context.remember(`statement_text_${pendingData.statementKey}`, {
-        text: result.text,
-        pages: result.pages,
-        bankName: pendingData.bankName,
-        filename: pdfAttachment.filename,
+        text: result.text, pages: result.pages, bankName: pendingData.bankName, filename,
       }, 'context');
 
       return this.respond(text, {
@@ -524,10 +617,7 @@ export class EmailAgent extends BaseAgent {
       });
     } catch (err: any) {
       context.remember('pending_statement', { ...pendingData, waitingForPassword: false }, 'context');
-      return this.respond(
-        `Something went wrong while processing the statement: ${err?.message || 'Unknown error'}\n\nPlease try again.`,
-        { suggestions: ['Try again', 'Search statements'] }
-      );
+      return this.respond(`Something went wrong: ${err?.message || 'Unknown error'}`, { suggestions: ['Try again'] });
     }
   }
 
