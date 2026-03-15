@@ -181,24 +181,80 @@ export abstract class BaseAgent implements IAgent {
    */
   protected async extractPdfAsync(buffer: Buffer, password?: string): Promise<{ text: string; pages: number; error?: string }> {
     try {
-      let pdfParse: any;
+      // Use pdfjs-dist directly — it supports password-protected PDFs.
+      // pdf-parse wraps pdfjs but does NOT pass the password option through.
+      let pdfjsLib: any;
       try {
-        pdfParse = require('pdf-parse');
+        pdfjsLib = require('pdfjs-dist/legacy/build/pdf');
       } catch {
-        return { text: '', pages: 0, error: 'PDF parsing library not available. Install pdf-parse to enable PDF extraction.' };
+        // Fallback to pdf-parse for unprotected PDFs if pdfjs-dist isn't available
+        try {
+          const pdfParse = require('pdf-parse');
+          const result = await pdfParse(buffer);
+          return { text: result.text || '', pages: result.numpages || 0 };
+        } catch (e2: any) {
+          const msg = (e2?.message || String(e2)).toLowerCase();
+          if (msg.includes('password') || msg.includes('encrypted')) {
+            return { text: '', pages: 0, error: 'password_required' };
+          }
+          return { text: '', pages: 0, error: 'PDF parsing library not available.' };
+        }
       }
-      const options: any = {};
+
+      // Build getDocument options — pass password when provided
+      const docOptions: any = { data: new Uint8Array(buffer) };
       if (password) {
-        options.password = password;
+        docOptions.password = password;
       }
-      const result = await pdfParse(buffer, options);
-      return { text: result.text || '', pages: result.numpages || 0 };
+
+      let doc: any;
+      try {
+        const task = pdfjsLib.getDocument(docOptions);
+        doc = await task.promise;
+      } catch (err: any) {
+        const errMsg = (err?.message || String(err)).toLowerCase();
+        if (errMsg.includes('password') || errMsg.includes('encrypted') ||
+            errMsg.includes('passwordexception') || errMsg.includes('incorrect password') ||
+            (err?.name === 'PasswordException')) {
+          return { text: '', pages: 0, error: 'password_required' };
+        }
+        throw err;
+      }
+
+      // Extract text from all pages
+      const numPages = doc.numPages;
+      let fullText = '';
+      for (let i = 1; i <= numPages; i++) {
+        try {
+          const page = await doc.getPage(i);
+          const content = await page.getTextContent({
+            normalizeWhitespace: false,
+            disableCombineTextItems: false,
+          });
+          let lastY: number | null = null;
+          let pageText = '';
+          for (const item of content.items) {
+            if (lastY === item.transform[5] || lastY === null) {
+              pageText += item.str;
+            } else {
+              pageText += '\n' + item.str;
+            }
+            lastY = item.transform[5];
+          }
+          fullText += (fullText ? '\n\n' : '') + pageText;
+        } catch {
+          // Skip unreadable pages
+        }
+      }
+
+      doc.destroy();
+      return { text: fullText, pages: numPages };
     } catch (err: any) {
-      const errMsg = err?.message || String(err);
-      if (errMsg.includes('password') || errMsg.includes('encrypted')) {
+      const errMsg = (err?.message || String(err)).toLowerCase();
+      if (errMsg.includes('password') || errMsg.includes('encrypted') || errMsg.includes('passwordexception')) {
         return { text: '', pages: 0, error: 'password_required' };
       }
-      return { text: '', pages: 0, error: errMsg };
+      return { text: '', pages: 0, error: err?.message || String(err) };
     }
   }
 
