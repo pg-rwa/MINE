@@ -44,8 +44,8 @@ export class FinanceAgent extends BaseAgent {
     // Analyze intent early so we can detect cross-agent needs
     const intent = this.analyzeIntent(message, context);
 
-    // If cross-agent data is needed, delegate first and include the result
-    let delegatedContext = '';
+    // If another agent can handle this better, navigate the user directly to that agent's chat
+    // instead of doing flaky background delegation. This gives the user a seamless handoff.
     if (intent.dataSources.length > 0 || intent.crossAgentRefs.length > 0) {
       const activeAgents = context.listActiveAgents();
       const sources = [...new Set([...intent.dataSources, ...intent.crossAgentRefs])];
@@ -54,18 +54,24 @@ export class FinanceAgent extends BaseAgent {
           a => a.id === source || a.description.toLowerCase().includes(source)
         );
         if (sourceAgent && sourceAgent.id !== this.manifest.id) {
-          // Pass the user's original message so entity names (bank names etc.) are preserved
-          const result = await this.delegateToAgent(
-            sourceAgent.id,
-            message.content,
-            context
+          return this.respond(
+            `This looks like something **${sourceAgent.name}** can handle directly. Let me take you there now...`,
+            {
+              actions: [{
+                type: 'navigate',
+                payload: {
+                  agent: sourceAgent.id,
+                  message: message.content,
+                  autoSend: true,
+                },
+              }],
+            }
           );
-          if (result) {
-            delegatedContext += `\n\n[Data from ${sourceAgent.name}]:\n${result.content}`;
-          }
         }
       }
     }
+
+    let delegatedContext = '';
 
     // For everything else — use AI with user's financial data as context
     const vaultData = this.getVaultDataSummary(context, ['emis', 'expenses', 'income']);
@@ -402,14 +408,30 @@ export class FinanceAgent extends BaseAgent {
   }
 
   private async handleGenericFinanceQuery(message: Message, context: AgentContext, intent: ReturnType<typeof this.analyzeIntent>): Promise<AgentResponse> {
-    // If the user's request involves other agents' data, delegate automatically
+    // If the user's request involves other agents' data, navigate them there directly
     if (intent.dataSources.length > 0 || intent.crossAgentRefs.length > 0) {
-      return this.resolveWithDelegation(
-        intent,
-        context,
-        "Here's what I have on my end. Let me know if you'd like to add or update anything.",
-        { suggestions: ['Show my EMIs', 'Add an expense', 'Monthly summary', 'Add income'] }
-      );
+      const activeAgents = context.listActiveAgents();
+      const sources = [...new Set([...intent.dataSources, ...intent.crossAgentRefs])];
+      for (const source of sources) {
+        const sourceAgent = activeAgents.find(
+          a => a.id === source || a.description.toLowerCase().includes(source)
+        );
+        if (sourceAgent && sourceAgent.id !== this.manifest.id) {
+          return this.respond(
+            `This looks like something **${sourceAgent.name}** can handle directly. Let me take you there now...`,
+            {
+              actions: [{
+                type: 'navigate',
+                payload: {
+                  agent: sourceAgent.id,
+                  message: message.content,
+                  autoSend: true,
+                },
+              }],
+            }
+          );
+        }
+      }
     }
 
     return this.respond(

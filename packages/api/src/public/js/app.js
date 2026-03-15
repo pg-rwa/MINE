@@ -458,6 +458,12 @@ const App = {
           if (action.type === 'show_widget' && action.payload.widget === 'inline_form') {
             actionsHtml += App.renderInlineForm(action.payload.form, response.agentId);
           }
+          // Handle navigate-to-agent: switch to target agent chat and auto-send message
+          if (action.type === 'navigate' && action.payload.agent) {
+            setTimeout(() => {
+              App.handoffToAgent(action.payload.agent, action.payload.message, action.payload.autoSend);
+            }, 800);
+          }
         });
       }
 
@@ -515,6 +521,33 @@ const App = {
   useSuggestion(text) {
     document.getElementById('chatInput').value = text;
     this.sendChat();
+  },
+
+  /**
+   * Handoff to another agent: switch to their chat and optionally auto-send a message.
+   * This gives users a seamless cross-agent experience instead of flaky background delegation.
+   */
+  async handoffToAgent(agentId, message, autoSend) {
+    this.chatAgentId = agentId;
+    this.conversationId = null;
+    await this.navigate('chat');
+
+    // Activate the correct agent chip
+    setTimeout(() => {
+      document.querySelectorAll('.agent-chip').forEach(el => {
+        el.classList.toggle('active', el.dataset.agent === agentId);
+      });
+
+      if (message) {
+        const input = document.getElementById('chatInput');
+        if (input) {
+          input.value = message;
+          if (autoSend) {
+            this.sendChat();
+          }
+        }
+      }
+    }, 150);
   },
 
   // ─── Inline Forms ──────────────────────────────
