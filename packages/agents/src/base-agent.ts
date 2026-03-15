@@ -171,27 +171,9 @@ export abstract class BaseAgent implements IAgent {
   /**
    * Extract text from a PDF file. Returns the text content or an error message.
    */
-  protected extractPdfText(filePath: string, filename: string, password?: string): string | null {
-    try {
-      const fs = require('fs');
-      const pdfParse = require('pdf-parse');
-      const buffer = fs.readFileSync(filePath);
-
-      // pdf-parse is async, but we need sync here — use a flag approach
-      // Store the buffer and parse it later in async context
-      // For now, attempt basic extraction
-      let result: string | null = null;
-      const parseOptions: any = {};
-      if (password) {
-        parseOptions.password = password;
-      }
-
-      // Since we're in a sync method, return a marker and actual parsing
-      // happens in the async flow. Store the path for later.
-      return `[PDF: ${filename}]\n[path:${filePath}]${password ? `\n[password:${password}]` : ''}\n(PDF ready for extraction. Use extractPdfAsync for full text.)`;
-    } catch {
-      return `[PDF document: ${filename}]\n(Could not read PDF file.)`;
-    }
+  protected extractPdfText(filePath: string, filename: string): string | null {
+    // PDF parsing is async — return a marker so the async AI flow picks it up
+    return `[PDF: ${filename}]\n[path:${filePath}]\n(PDF ready for extraction. Use extractPdfAsync for full text.)`;
   }
 
   /**
@@ -199,7 +181,12 @@ export abstract class BaseAgent implements IAgent {
    */
   protected async extractPdfAsync(buffer: Buffer, password?: string): Promise<{ text: string; pages: number; error?: string }> {
     try {
-      const pdfParse = require('pdf-parse');
+      let pdfParse: any;
+      try {
+        pdfParse = require('pdf-parse');
+      } catch {
+        return { text: '', pages: 0, error: 'PDF parsing library not available. Install pdf-parse to enable PDF extraction.' };
+      }
       const options: any = {};
       if (password) {
         options.password = password;
