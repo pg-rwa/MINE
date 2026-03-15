@@ -180,102 +180,14 @@ export abstract class BaseAgent implements IAgent {
    * Asynchronously extract text from a PDF buffer, with optional password.
    */
   protected async extractPdfAsync(buffer: Buffer, password?: string): Promise<{ text: string; pages: number; error?: string }> {
+    // Wrap in a timeout to prevent hanging
+    const timeoutMs = 30000;
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('PDF parsing timed out after 30s')), timeoutMs)
+    );
+
     try {
-      // Use pdfjs-dist directly — it supports password-protected PDFs.
-      // pdf-parse wraps pdfjs but does NOT pass the password option through.
-      let pdfjsLib: any;
-      try {
-        pdfjsLib = require('pdfjs-dist/legacy/build/pdf');
-      } catch {
-        // Fallback to pdf-parse for unprotected PDFs if pdfjs-dist isn't available
-        try {
-          const pdfParse = require('pdf-parse');
-          const result = await pdfParse(buffer);
-          return { text: result.text || '', pages: result.numpages || 0 };
-        } catch (e2: any) {
-          const msg = (e2?.message || String(e2)).toLowerCase();
-          if (msg.includes('password') || msg.includes('encrypted')) {
-            return { text: '', pages: 0, error: 'password_required' };
-          }
-          return { text: '', pages: 0, error: 'PDF parsing library not available.' };
-        }
-      }
-
-      // Build getDocument options — pass password when provided
-      const docOptions: any = { data: new Uint8Array(buffer) };
-      if (password) {
-        docOptions.password = password;
-      }
-
-      let doc: any;
-      try {
-        console.log(`[PDF] extractPdfAsync called, buffer size: ${buffer.length}, password provided: ${!!password}, password length: ${password?.length || 0}`);
-        const task = pdfjsLib.getDocument(docOptions);
-
-        // pdfjs v2 uses onPassword callback for password-protected PDFs.
-        // When a password is provided in the source options, pdfjs tries it first.
-        // If it fails (or for some encryption types), it calls onPassword.
-        // We supply the password via callback as well, for maximum compatibility.
-        let passwordAttempted = false;
-        task.onPassword = (updatePassword: (pwd: string) => void, reason: number) => {
-          // reason: 1 = need password (first time), 2 = incorrect password
-          console.log(`[PDF] onPassword callback triggered, reason: ${reason}, password provided: ${!!password}`);
-          if (password && !passwordAttempted) {
-            passwordAttempted = true;
-            updatePassword(password);
-          } else {
-            // No password or already tried — reject by providing empty string
-            // which will cause pdfjs to throw PasswordException
-            updatePassword('');
-          }
-        };
-
-        doc = await task.promise;
-        console.log(`[PDF] Document opened successfully, pages: ${doc.numPages}`);
-      } catch (err: any) {
-        const errMsg = (err?.message || String(err)).toLowerCase();
-        const errCode = err?.code;
-        console.error(`[PDF] getDocument error: name=${err?.name}, code=${errCode}, message=${err?.message}`);
-        // pdfjs PasswordException codes: 1 = need password, 2 = incorrect password
-        if (errMsg.includes('password') || errMsg.includes('encrypted') ||
-            errMsg.includes('passwordexception') || errMsg.includes('incorrect password') ||
-            (err?.name === 'PasswordException')) {
-          if (errCode === 2 || errMsg.includes('incorrect')) {
-            return { text: '', pages: 0, error: 'incorrect_password' };
-          }
-          return { text: '', pages: 0, error: 'password_required' };
-        }
-        throw err;
-      }
-
-      // Extract text from all pages
-      const numPages = doc.numPages;
-      let fullText = '';
-      for (let i = 1; i <= numPages; i++) {
-        try {
-          const page = await doc.getPage(i);
-          const content = await page.getTextContent({
-            normalizeWhitespace: false,
-            disableCombineTextItems: false,
-          });
-          let lastY: number | null = null;
-          let pageText = '';
-          for (const item of content.items) {
-            if (lastY === item.transform[5] || lastY === null) {
-              pageText += item.str;
-            } else {
-              pageText += '\n' + item.str;
-            }
-            lastY = item.transform[5];
-          }
-          fullText += (fullText ? '\n\n' : '') + pageText;
-        } catch {
-          // Skip unreadable pages
-        }
-      }
-
-      doc.destroy();
-      return { text: fullText, pages: numPages };
+      return await Promise.race([this._extractPdfInternal(buffer, password), timeoutPromise]);
     } catch (err: any) {
       const errMsg = (err?.message || String(err)).toLowerCase();
       if (errMsg.includes('password') || errMsg.includes('encrypted') || errMsg.includes('passwordexception')) {
@@ -283,6 +195,109 @@ export abstract class BaseAgent implements IAgent {
       }
       return { text: '', pages: 0, error: err?.message || String(err) };
     }
+  }
+
+  private async _extractPdfInternal(buffer: Buffer, password?: string): Promise<{ text: string; pages: number; error?: string }> {
+    // Use pdfjs-dist directly — it supports password-protected PDFs.
+    // pdf-parse wraps pdfjs but does NOT pass the password option through.
+    let pdfjsLib: any;
+    try {
+      pdfjsLib = require('pdfjs-dist/legacy/build/pdf');
+    } catch {
+      // Fallback to pdf-parse for unprotected PDFs if pdfjs-dist isn't available
+      try {
+        const pdfParse = require('pdf-parse');
+        const result = await pdfParse(buffer);
+        return { text: result.text || '', pages: result.numpages || 0 };
+      } catch (e2: any) {
+        const msg = (e2?.message || String(e2)).toLowerCase();
+        if (msg.includes('password') || msg.includes('encrypted')) {
+          return { text: '', pages: 0, error: 'password_required' };
+        }
+        return { text: '', pages: 0, error: 'PDF parsing library not available.' };
+      }
+    }
+
+    // Disable workers for Node.js environment
+    pdfjsLib.GlobalWorkerOptions.workerSrc = '';
+
+    // Build getDocument options — pass password when provided
+    const docOptions: any = {
+      data: new Uint8Array(buffer),
+      useWorkerFetch: false,
+      isEvalSupported: false,
+      useSystemFonts: false,
+    };
+    if (password) {
+      docOptions.password = password;
+    }
+
+    let doc: any;
+    try {
+      console.log(`[PDF] extractPdfAsync called, buffer size: ${buffer.length}, password provided: ${!!password}, password length: ${password?.length || 0}`);
+      const task = pdfjsLib.getDocument(docOptions);
+
+      // pdfjs uses onPassword callback for password-protected PDFs.
+      // CRITICAL: Do NOT call updatePassword('') — it creates an infinite loop.
+      // Instead, throw an error to reject the promise.
+      let passwordAttempted = false;
+      task.onPassword = (updatePassword: (pwd: string) => void, reason: number) => {
+        // reason: 1 = need password (first time), 2 = incorrect password
+        console.log(`[PDF] onPassword callback triggered, reason: ${reason}, password provided: ${!!password}, attempted: ${passwordAttempted}`);
+        if (password && !passwordAttempted) {
+          passwordAttempted = true;
+          updatePassword(password);
+        } else {
+          // No password or already tried and failed — throw to break the loop
+          throw new Error(reason === 2 ? 'Incorrect Password' : 'password_required');
+        }
+      };
+
+      doc = await task.promise;
+      console.log(`[PDF] Document opened successfully, pages: ${doc.numPages}`);
+    } catch (err: any) {
+      const errMsg = (err?.message || String(err)).toLowerCase();
+      const errCode = err?.code;
+      console.error(`[PDF] getDocument error: name=${err?.name}, code=${errCode}, message=${err?.message}`);
+      if (errMsg.includes('password') || errMsg.includes('encrypted') ||
+          errMsg.includes('passwordexception') || errMsg.includes('incorrect password') ||
+          (err?.name === 'PasswordException')) {
+        if (errCode === 2 || errMsg.includes('incorrect')) {
+          return { text: '', pages: 0, error: 'incorrect_password' };
+        }
+        return { text: '', pages: 0, error: 'password_required' };
+      }
+      throw err;
+    }
+
+    // Extract text from all pages
+    const numPages = doc.numPages;
+    let fullText = '';
+    for (let i = 1; i <= numPages; i++) {
+      try {
+        const page = await doc.getPage(i);
+        const content = await page.getTextContent({
+          normalizeWhitespace: false,
+          disableCombineTextItems: false,
+        });
+        let lastY: number | null = null;
+        let pageText = '';
+        for (const item of content.items) {
+          if (lastY === item.transform[5] || lastY === null) {
+            pageText += item.str;
+          } else {
+            pageText += '\n' + item.str;
+          }
+          lastY = item.transform[5];
+        }
+        fullText += (fullText ? '\n\n' : '') + pageText;
+      } catch {
+        // Skip unreadable pages
+      }
+    }
+
+    doc.destroy();
+    return { text: fullText, pages: numPages };
   }
 
   /**
