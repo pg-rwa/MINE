@@ -387,9 +387,21 @@ Guidelines:
     context: AgentContext
   ): Promise<AgentResponse | null> {
     try {
-      const result = await context.sendToAgent(targetAgentId, request);
+      // Add timeout to prevent delegation from hanging indefinitely
+      const timeoutMs = 15000;
+      const timeoutPromise = new Promise<null>((resolve) =>
+        setTimeout(() => {
+          console.warn(`[Delegation] Timeout: ${this.manifest.id} → ${targetAgentId} after ${timeoutMs}ms`);
+          resolve(null);
+        }, timeoutMs)
+      );
+
+      const result = await Promise.race([
+        context.sendToAgent(targetAgentId, request),
+        timeoutPromise,
+      ]);
+
       if (result) {
-        // Store the delegation result in shared memory so other agents can also benefit
         context.remember(
           `delegation_${targetAgentId}_${Date.now()}`,
           { from: this.manifest.id, to: targetAgentId, request, summary: result.content.slice(0, 300) },
@@ -397,7 +409,8 @@ Guidelines:
         );
       }
       return result;
-    } catch {
+    } catch (err) {
+      console.error(`[Delegation] Error: ${this.manifest.id} → ${targetAgentId}:`, err);
       return null;
     }
   }

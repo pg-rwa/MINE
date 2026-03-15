@@ -54,9 +54,10 @@ export class FinanceAgent extends BaseAgent {
           a => a.id === source || a.description.toLowerCase().includes(source)
         );
         if (sourceAgent && sourceAgent.id !== this.manifest.id) {
+          // Pass the user's original message so entity names (bank names etc.) are preserved
           const result = await this.delegateToAgent(
             sourceAgent.id,
-            `Find data related to: ${intent.primaryTopic}. Show any transactions, EMIs, bills, or statements.`,
+            message.content,
             context
           );
           if (result) {

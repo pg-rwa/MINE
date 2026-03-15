@@ -36,10 +36,22 @@ export class EmailAgent extends BaseAgent {
     'dib': ['dubai islamic', 'dib'],
     'fab': ['first abu dhabi', 'fab'],
     'rakbank': ['rak bank', 'rakbank'],
+    'cbd': ['commercial bank of dubai', 'cbd', 'cbd bank'],
+    'ajman bank': ['ajman bank'],
+    'nbd': ['national bank of dubai', 'nbd'],
+    'hsbc': ['hsbc', 'hsbc bank'],
+    'sc': ['standard chartered', 'stanchart'],
+    'citi': ['citibank', 'citi'],
     'hdfc': ['hdfc bank', 'hdfcbank'],
     'icici': ['icici bank', 'icicibank'],
-    'sbi': ['state bank', 'sbi'],
+    'sbi': ['state bank of india', 'sbi'],
     'axis': ['axis bank', 'axisbank'],
+    'kotak': ['kotak mahindra', 'kotak'],
+    'yes bank': ['yes bank', 'yesbank'],
+    'idfc': ['idfc first', 'idfc'],
+    'bob': ['bank of baroda', 'bob'],
+    'pnb': ['punjab national', 'pnb'],
+    'sib': ['south indian bank', 'sib', 'sharjah islamic bank'],
   };
 
   async handleMessage(message: Message, context: AgentContext): Promise<AgentResponse> {
@@ -98,7 +110,7 @@ export class EmailAgent extends BaseAgent {
     }
 
     // Smart keyword search — extract entity names and search Gmail directly
-    const keywords = this.extractSearchKeywords(content);
+    const keywords = this.extractSearchKeywords(content, message.content);
     if (keywords.length > 0) {
       const gmail = context.checkIntegration('gmail');
       if (gmail.connected) {
@@ -144,17 +156,16 @@ export class EmailAgent extends BaseAgent {
    * Extract meaningful search keywords from user's message.
    * Recognizes bank names, financial terms, and entity names.
    */
-  private extractSearchKeywords(content: string): string[] {
+  private extractSearchKeywords(content: string, originalContent?: string): string[] {
     const keywords: string[] = [];
+    const lower = content.toLowerCase();
 
     // Check for known bank aliases — these are entity keywords
     for (const [fullName, aliases] of Object.entries(EmailAgent.BANK_ALIASES)) {
-      if (aliases.some(a => content.includes(a)) || content.includes(fullName)) {
+      if (aliases.some(a => lower.includes(a)) || lower.includes(fullName)) {
         keywords.push(fullName);
-        // Also add the short alias forms for better Gmail matching
-        // e.g. "sib" emails might not say "sharjah islamic bank"
         for (const alias of aliases) {
-          if (content.includes(alias)) keywords.push(alias);
+          if (lower.includes(alias)) keywords.push(alias);
         }
       }
     }
@@ -165,15 +176,30 @@ export class EmailAgent extends BaseAgent {
       keywords.push(...quoted.map(q => q.replace(/"/g, '')));
     }
 
+    // Extract capitalized multi-word phrases from original content
+    // e.g. "Commercial Bank of Dubai" — catches bank/company names not in aliases
+    const cased = originalContent || content;
+    const entityPattern = /\b([A-Z][a-z]+(?:\s+(?:of|and|the|for)\s+)?(?:[A-Z][a-z]+)(?:\s+(?:of|and|the|for|[A-Z][a-z]+))*)\b/g;
+    let match;
+    while ((match = entityPattern.exec(cased)) !== null) {
+      const phrase = match[1].trim();
+      const words = phrase.split(/\s+/);
+      if (words.length >= 2 && !keywords.some(k => k.toLowerCase() === phrase.toLowerCase())) {
+        const skipStarts = ['show', 'find', 'search', 'give', 'tell', 'let', 'get', 'check', 'list'];
+        if (!skipStarts.some(s => phrase.toLowerCase().startsWith(s))) {
+          keywords.push(phrase.toLowerCase());
+        }
+      }
+    }
+
     // Financial / document type terms — these are type keywords
-    // The Gmail adapter will AND these with entity keywords above
     const financialTerms = [
       'statement', 'e-statement', 'loan', 'mortgage', 'emi', 'insurance',
       'investment', 'mutual fund', 'fixed deposit', 'fd', 'rd',
       'credit card', 'balance', 'account summary',
     ];
     for (const term of financialTerms) {
-      if (content.includes(term)) keywords.push(term);
+      if (lower.includes(term)) keywords.push(term);
     }
 
     return [...new Set(keywords)];
@@ -329,7 +355,7 @@ export class EmailAgent extends BaseAgent {
     }
 
     // Extract bank-specific keywords
-    const keywords = this.extractSearchKeywords(content);
+    const keywords = this.extractSearchKeywords(content, message.content);
     keywords.push('statement');
 
     // Always search Gmail fresh for statements — vault entries may be stale
