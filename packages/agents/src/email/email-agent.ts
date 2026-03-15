@@ -479,6 +479,7 @@ export class EmailAgent extends BaseAgent {
           messageId,
           attachmentId: pdfAttachment.id,
           filename: pdfAttachment.filename,
+          passwordHint: (d.passwordHint as string) || undefined,
           waitingForPassword: true,
         }, 'context');
 
@@ -487,12 +488,14 @@ export class EmailAgent extends BaseAgent {
         let pwText = `**${label}**\n📎 ${pdfAttachment.filename}\n\n`;
         pwText += `🔒 **This PDF is password-protected.**\n\n`;
         if (hint) {
-          pwText += `Hint from email: *${hint}*\n\n`;
+          pwText += `From the email: **${hint}**\n\n`;
+        } else {
+          // Only show generic hints if we couldn't extract the actual one
+          pwText += `Common passwords for bank statements:\n`;
+          pwText += `• Date of birth (DDMMYY or DDMMYYYY)\n`;
+          pwText += `• PAN number (e.g., ABCDE1234F)\n`;
+          pwText += `• Last 4 digits of account number\n\n`;
         }
-        pwText += `Common passwords for bank statements:\n`;
-        pwText += `• Date of birth: **DDMMYYYY** (e.g., 15031990)\n`;
-        pwText += `• PAN number (e.g., ABCDE1234F)\n`;
-        pwText += `• Last 4 digits of account number\n\n`;
         pwText += `**Type the password below** and I'll open it for you.`;
 
         return this.respond(pwText, {
@@ -550,7 +553,7 @@ export class EmailAgent extends BaseAgent {
    */
   private async handleStatementPasswordAttempt(
     password: string,
-    pendingData: { statementKey: string; bankName?: string; keywords: string[]; messageId?: string; attachmentId?: string; filename?: string },
+    pendingData: { statementKey: string; bankName?: string; keywords: string[]; messageId?: string; attachmentId?: string; filename?: string; passwordHint?: string },
     context: AgentContext
   ): Promise<AgentResponse> {
     // Use stored messageId/attachmentId from context, or fall back to vault
@@ -592,14 +595,17 @@ export class EmailAgent extends BaseAgent {
       const result = await this.extractPdfAsync(pdfBuffer, password);
 
       if (result.error === 'password_required') {
-        return this.respond(
-          `**Incorrect password.** The PDF couldn't be opened with that password.\n\n` +
-          `Try a different format:\n` +
-          `• Date of birth: **DDMMYYYY** (e.g., 15031990)\n` +
-          `• PAN number (e.g., ABCDE1234F)\n` +
-          `• Last 4 digits of account number`,
-          { suggestions: ['Skip this statement'] }
-        );
+        let retryText = `**Incorrect password.** The PDF couldn't be opened with that password.\n\n`;
+        if (pendingData.passwordHint) {
+          retryText += `From the email: **${pendingData.passwordHint}**\n\n`;
+          retryText += `Please try again with the correct format.`;
+        } else {
+          retryText += `Try a different format:\n`;
+          retryText += `• Date of birth (DDMMYY or DDMMYYYY)\n`;
+          retryText += `• PAN number (e.g., ABCDE1234F)\n`;
+          retryText += `• Last 4 digits of account number`;
+        }
+        return this.respond(retryText, { suggestions: ['Skip this statement'] });
       }
 
       if (result.error) {

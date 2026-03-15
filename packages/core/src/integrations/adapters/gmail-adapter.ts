@@ -334,7 +334,7 @@ export class GmailAdapter implements IntegrationAdapter {
         messageId: messageId || undefined,
         attachmentIds: attachmentIds.map(a => ({ id: a.attachmentId, filename: a.filename, mimeType: a.mimeType })),
         passwordProtected: likelyProtected,
-        passwordHint: passwordHint || (likelyProtected ? 'Usually your date of birth (DDMMYYYY), PAN number, or last 4 digits of account number' : undefined),
+        passwordHint: passwordHint || undefined,
       },
       timestamp: date,
     };
@@ -365,16 +365,38 @@ export class GmailAdapter implements IntegrationAdapter {
   }
 
   private detectPasswordHint(body: string): string | null {
-    // Common patterns: "Password is your DOB in DDMMYYYY", "Password: last 4 digits of account"
-    const patterns = [
-      /password\s*(?:is|:)\s*(.{5,80})/i,
-      /protected\s*(?:with|by|using)\s*(.{5,80})/i,
-      /to\s+open\s*(?:this|the)?\s*(?:pdf|file|attachment|statement)\s*[,:]\s*(.{5,80})/i,
+    // Try multiple patterns — banks use many different phrasings.
+    const patterns: RegExp[] = [
+      // "password is your DOB in DDMMYYYY"
+      /password\s*(?:is|:)\s*(.{5,120})/i,
+      // "protected with/by..."
+      /protected\s*(?:with|by|using)\s*(.{5,120})/i,
+      // "to open/view this pdf/document, enter..."
+      /to\s+(?:open|view)\s+(?:this|the|your)?\s*(?:pdf|file|attachment|statement|document)\s*[,:]\s*(.{5,120})/i,
+      // SIB style: "to view the document, enter your date of birth..."
+      /to\s+view\s+(?:the\s+)?(?:attached\s+)?document\s*[,:]\s*(.{5,120})/i,
+      // "enter your date of birth within the following format "DDMMYY""
+      /enter\s+your\s+(?:date\s+of\s+birth|dob|password)[\s,]+(?:within\s+)?(?:the\s+)?(?:following\s+)?format\s*["""]?([^"""\n]{3,80})/i,
+      // "secured with a password" — grab the next sentence
+      /secured?\s+with\s+a?\s*password[.\s]+([^.]{5,120})/i,
     ];
+
     for (const pattern of patterns) {
       const match = body.match(pattern);
-      if (match) return match[1].trim().replace(/\.$/, '');
+      if (match) return match[1].trim().replace(/\.$/, '').slice(0, 150);
     }
+
+    // Look for date format strings like DDMMYY or DDMMYYYY anywhere in the body
+    const formatMatch = body.match(/[""]?(DD\s*MM\s*YY(?:YY)?)[""]?/i);
+    if (formatMatch) {
+      const format = formatMatch[1].replace(/\s/g, '');
+      const exampleMatch = body.match(/(?:example|e\.?g\.?)\s*[:(]\s*(\d{4,10})/i);
+      if (exampleMatch) {
+        return `Date of birth in ${format} format (Example: ${exampleMatch[1]})`;
+      }
+      return `Date of birth in ${format} format`;
+    }
+
     return null;
   }
 
@@ -491,18 +513,54 @@ export class GmailAdapter implements IntegrationAdapter {
   private extractBody(payload: any): string {
     if (!payload) return '';
     if (payload.body?.data) {
-      return Buffer.from(payload.body.data, 'base64').toString('utf-8');
+      const raw = Buffer.from(payload.body.data, 'base64').toString('utf-8');
+      if (payload.mimeType === 'text/html') return this.stripHtml(raw);
+      return raw;
     }
     if (payload.parts) {
+      // Prefer text/plain
       for (const part of payload.parts) {
         if (part.mimeType === 'text/plain' && part.body?.data) {
           return Buffer.from(part.body.data, 'base64').toString('utf-8');
         }
       }
-      // Fallback to first part
-      return this.extractBody(payload.parts[0]);
+      // Fall back to text/html — strip tags to get readable text
+      for (const part of payload.parts) {
+        if (part.mimeType === 'text/html' && part.body?.data) {
+          const html = Buffer.from(part.body.data, 'base64').toString('utf-8');
+          return this.stripHtml(html);
+        }
+      }
+      // Recurse into multipart/alternative or multipart/related
+      for (const part of payload.parts) {
+        if (part.parts || part.mimeType?.startsWith('multipart/')) {
+          const text = this.extractBody(part);
+          if (text) return text;
+        }
+      }
     }
     return '';
+  }
+
+  /**
+   * Strip HTML tags and decode entities to get readable text.
+   * Preserves line breaks from block elements.
+   */
+  private stripHtml(html: string): string {
+    return html
+      .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+      .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<\/(p|div|tr|li|h[1-6])>/gi, '\n')
+      .replace(/<[^>]+>/g, '')
+      .replace(/&nbsp;/gi, ' ')
+      .replace(/&amp;/gi, '&')
+      .replace(/&lt;/gi, '<')
+      .replace(/&gt;/gi, '>')
+      .replace(/&quot;/gi, '"')
+      .replace(/&#39;/gi, "'")
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
   }
 
   private extractPlatform(from: string): string {
