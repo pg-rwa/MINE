@@ -46,6 +46,20 @@ export class EmailAgent extends BaseAgent {
     const content = message.content.toLowerCase();
     const intent = this.analyzeIntent(message, context);
 
+    // Check if we're waiting for a password response for a pending statement
+    const pendingStmt = context.recall('context').find(m => m.key === 'pending_statement' && (m.value as any)?.waitingForPassword);
+    if (pendingStmt) {
+      const pendingData = pendingStmt.value as { statementKey: string; bankName?: string; keywords: string[] };
+      // User might be providing a password (short input, not a question/command)
+      const looksLikePassword = content.length <= 30 && !content.includes('skip') && !content.includes('show') &&
+        !content.includes('search') && !content.includes('help') && !/^(yes|no|ok|cancel)$/i.test(content.trim());
+      if (looksLikePassword) {
+        return this.handleStatementPasswordAttempt(message.content.trim(), pendingData, context);
+      }
+      // Clear the pending state if user moved on
+      context.remember('pending_statement', { ...pendingData, waitingForPassword: false }, 'context');
+    }
+
     // Route to specific handlers based on intent
     if (content.includes('statement') || content.includes('loan') || content.includes('emi')) {
       return this.handleStatementRequest(message, context, intent);
@@ -126,10 +140,15 @@ export class EmailAgent extends BaseAgent {
   private extractSearchKeywords(content: string): string[] {
     const keywords: string[] = [];
 
-    // Check for known bank aliases
+    // Check for known bank aliases — these are entity keywords
     for (const [fullName, aliases] of Object.entries(EmailAgent.BANK_ALIASES)) {
       if (aliases.some(a => content.includes(a)) || content.includes(fullName)) {
         keywords.push(fullName);
+        // Also add the short alias forms for better Gmail matching
+        // e.g. "sib" emails might not say "sharjah islamic bank"
+        for (const alias of aliases) {
+          if (content.includes(alias)) keywords.push(alias);
+        }
       }
     }
 
@@ -139,17 +158,44 @@ export class EmailAgent extends BaseAgent {
       keywords.push(...quoted.map(q => q.replace(/"/g, '')));
     }
 
-    // Detect capitalized entity names (2+ words) that aren't common words
-    const commonWords = new Set(['show', 'me', 'my', 'the', 'from', 'about', 'find', 'search', 'check', 'get', 'any', 'all', 'email', 'emails', 'mail']);
-    const words = content.split(/\s+/).filter(w => !commonWords.has(w) && w.length > 2);
-
-    // Financial terms that indicate a targeted search is needed
-    const financialTerms = ['loan', 'mortgage', 'emi', 'insurance', 'investment', 'mutual fund', 'fixed deposit', 'fd', 'rd'];
+    // Financial / document type terms — these are type keywords
+    // The Gmail adapter will AND these with entity keywords above
+    const financialTerms = [
+      'statement', 'e-statement', 'loan', 'mortgage', 'emi', 'insurance',
+      'investment', 'mutual fund', 'fixed deposit', 'fd', 'rd',
+      'credit card', 'balance', 'account summary',
+    ];
     for (const term of financialTerms) {
       if (content.includes(term)) keywords.push(term);
     }
 
     return [...new Set(keywords)];
+  }
+
+  /**
+   * Split keywords into entity names (banks/companies) vs document types.
+   * Used for AND-based filtering: entry must match entity AND type.
+   */
+  private splitKeywordsByRole(keywords: string[]): { entityKws: string[]; typeKws: string[] } {
+    const typeTerms = new Set([
+      'statement', 'e-statement', 'loan', 'mortgage', 'emi', 'insurance',
+      'investment', 'mutual fund', 'fixed deposit', 'fd', 'rd',
+      'credit card', 'balance', 'account summary', 'transaction',
+      'bill', 'invoice',
+    ]);
+
+    const entityKws: string[] = [];
+    const typeKws: string[] = [];
+
+    for (const kw of keywords) {
+      if (typeTerms.has(kw.toLowerCase())) {
+        typeKws.push(kw);
+      } else {
+        entityKws.push(kw);
+      }
+    }
+
+    return { entityKws, typeKws };
   }
 
   /**
@@ -167,10 +213,14 @@ export class EmailAgent extends BaseAgent {
       allEntries.push(...entries);
     }
 
-    const keywordStr = keywords.join(' ').toLowerCase();
+    // Use AND logic: entry must match at least one entity keyword AND one type keyword
+    // This prevents "SIB statement" from matching random statements from other banks
+    const { entityKws, typeKws } = this.splitKeywordsByRole(keywords);
     const vaultMatches = allEntries.filter(e => {
       const text = JSON.stringify(e.data).toLowerCase();
-      return keywords.some(k => text.includes(k.toLowerCase()));
+      const matchesEntity = entityKws.length === 0 || entityKws.some(k => text.includes(k.toLowerCase()));
+      const matchesType = typeKws.length === 0 || typeKws.some(k => text.includes(k.toLowerCase()));
+      return matchesEntity && matchesType;
     });
 
     // If vault has matches, return those
@@ -251,11 +301,15 @@ export class EmailAgent extends BaseAgent {
     const keywords = this.extractSearchKeywords(content);
     keywords.push('statement'); // Always include 'statement'
 
-    // Search vault first, then live
+    // Search vault first, then live — use AND logic so bank-specific searches don't return unrelated statements
     const vaultEntries = this.safeGetVault(context, 'transactions');
-    const statementEntries = vaultEntries.filter(e =>
-      e.data.type === 'statement' && keywords.some(k => JSON.stringify(e.data).toLowerCase().includes(k.toLowerCase()))
-    );
+    const { entityKws, typeKws } = this.splitKeywordsByRole(keywords);
+    const statementEntries = vaultEntries.filter(e => {
+      if (e.data.type !== 'statement') return false;
+      const text = JSON.stringify(e.data).toLowerCase();
+      const matchesEntity = entityKws.length === 0 || entityKws.some(k => text.includes(k.toLowerCase()));
+      return matchesEntity; // type is already 'statement', no need to re-check
+    });
 
     if (statementEntries.length > 0) {
       return this.handlePasswordProtectedStatement(
@@ -298,39 +352,183 @@ export class EmailAgent extends BaseAgent {
     context: AgentContext
   ): AgentResponse {
     const stmt = statements[0];
-    let text = `**Found ${statements.length} statement(s) for "${keywords.join(', ')}"**\n\n`;
-    text += `📄 **${stmt.data.description || stmt.data.subject || 'Bank Statement'}**\n`;
-    if (stmt.data.date) text += `   Date: ${new Date(stmt.data.date as string).toLocaleDateString()}\n`;
-    if (stmt.data.source) text += `   From: ${stmt.data.source}\n`;
+    const bankName = this.extractBankNameFromKeywords(keywords);
+    let text = `**Found ${statements.length} ${bankName ? bankName + ' ' : ''}statement(s)**\n\n`;
 
-    if (stmt.data.hasAttachment) {
-      text += `   📎 Attachment: ${(stmt.data.attachments as any[])?.[0]?.name || 'PDF file'}\n`;
+    for (let i = 0; i < Math.min(statements.length, 3); i++) {
+      const s = statements[i];
+      const idx = statements.length > 1 ? `${i + 1}. ` : '';
+      text += `${idx}📄 **${s.data.description || s.data.subject || 'Bank Statement'}**\n`;
+      if (s.data.date) text += `   Date: ${new Date(s.data.date as string).toLocaleDateString()}\n`;
+      if (s.data.source) text += `   From: ${s.data.source}\n`;
+      if (s.data.hasAttachment) {
+        const attName = (s.data.attachments as any[])?.[0]?.name || 'PDF file';
+        text += `   📎 Attachment: ${attName}\n`;
+      }
+      text += '\n';
     }
 
-    if (stmt.data.passwordProtected) {
-      text += `\n🔒 **This statement is password-protected.**\n`;
+    if (statements.length > 3) {
+      text += `_...and ${statements.length - 3} more statement(s)_\n\n`;
+    }
+
+    // Check if any statement has a PDF attachment — proactively ask for password
+    const hasPdfAttachment = statements.some(s =>
+      s.data.hasAttachment && (
+        s.data.passwordProtected ||
+        (s.data.attachments as any[])?.some((a: any) =>
+          a.name?.toLowerCase().endsWith('.pdf') || a.mimeType === 'application/pdf'
+        )
+      )
+    );
+
+    if (stmt.data.passwordProtected || hasPdfAttachment) {
+      text += `🔒 **This statement PDF is likely password-protected.**\n`;
       if (stmt.data.passwordHint) {
-        text += `   Hint from email: *${stmt.data.passwordHint}*\n`;
+        text += `   Hint: *${stmt.data.passwordHint}*\n`;
+      } else {
+        text += `   Common passwords: your date of birth (DDMMYYYY), PAN number, or last 4 digits of account number.\n`;
       }
-      text += `\nPlease share the password so I can open and extract the statement details for you.`;
+      text += `\n**Please share the password** so I can open and extract the statement details for you.`;
 
       // Remember that we're waiting for a password
       context.remember('pending_statement', {
         statementKey: stmt.key,
+        bankName,
         keywords,
         waitingForPassword: true,
+        statementCount: statements.length,
       }, 'context');
 
       return this.respond(text, {
         suggestions: ['Enter password', 'Skip this statement', 'Show other results'],
-        actions: [{ type: 'confirm_action', payload: { action: 'request_password', statementKey: stmt.key } }],
+        actions: [
+          { type: 'confirm_action', payload: { action: 'request_password', statementKey: stmt.key } },
+        ],
       });
     }
 
-    text += '\n\nI can extract the details from this statement for you.';
+    text += 'I can extract the details from this statement for you.';
     return this.respond(text, {
       suggestions: ['Extract details', 'Show more statements'],
     });
+  }
+
+  /**
+   * Extract a readable bank name from search keywords for display.
+   */
+  private extractBankNameFromKeywords(keywords: string[]): string | null {
+    for (const [fullName] of Object.entries(EmailAgent.BANK_ALIASES)) {
+      if (keywords.some(k => k.toLowerCase() === fullName)) {
+        return fullName.split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Handle password submission for a pending statement.
+   * Downloads the PDF attachment from Gmail and attempts decryption.
+   */
+  private async handleStatementPasswordAttempt(
+    password: string,
+    pendingData: { statementKey: string; bankName?: string; keywords: string[] },
+    context: AgentContext
+  ): Promise<AgentResponse> {
+    // Find the statement in vault
+    const vaultEntries = this.safeGetVault(context, 'transactions');
+    const stmt = vaultEntries.find(e => e.key === pendingData.statementKey);
+
+    if (!stmt || !stmt.data.messageId) {
+      // Clear pending state
+      context.remember('pending_statement', { ...pendingData, waitingForPassword: false }, 'context');
+      return this.respond(
+        "I couldn't find the statement to open. The data may have expired. Let me search again.",
+        { suggestions: ['Search statements again'] }
+      );
+    }
+
+    const messageId = stmt.data.messageId as string;
+    const attachmentIds = stmt.data.attachmentIds as Array<{ id: string; filename: string; mimeType: string }>;
+    const pdfAttachment = attachmentIds?.find(a =>
+      a.mimeType === 'application/pdf' || a.filename.toLowerCase().endsWith('.pdf')
+    );
+
+    if (!pdfAttachment) {
+      context.remember('pending_statement', { ...pendingData, waitingForPassword: false }, 'context');
+      return this.respond(
+        "No PDF attachment found in this email. The statement might be in the email body instead.",
+        { suggestions: ['Show email content', 'Search again'] }
+      );
+    }
+
+    try {
+      // Download the PDF from Gmail
+      const gmail = context.checkIntegration('gmail');
+      if (!gmail.connected) {
+        return this.respond("Gmail is disconnected. Please reconnect to download the statement.", { suggestions: ['Reconnect Gmail'] });
+      }
+
+      const pdfBuffer = await context.downloadAttachment('gmail', messageId, pdfAttachment.id);
+
+      if (!pdfBuffer) {
+        return this.respond(
+          "Failed to download the PDF from Gmail. Please try again.",
+          { suggestions: ['Try again', 'Skip'] }
+        );
+      }
+
+      // Try to parse the PDF with the provided password
+      const result = await this.extractPdfAsync(pdfBuffer, password);
+
+      if (result.error === 'password_required') {
+        return this.respond(
+          `**Incorrect password.** The PDF couldn't be opened with "${password}".\n\n` +
+          `Please try a different password. Common formats:\n` +
+          `- Date of birth: DDMMYYYY (e.g., 15031990)\n` +
+          `- PAN number (e.g., ABCDE1234F)\n` +
+          `- Last 4 digits of account number`,
+          { suggestions: ['Try another password', 'Skip this statement'] }
+        );
+      }
+
+      if (result.error) {
+        context.remember('pending_statement', { ...pendingData, waitingForPassword: false }, 'context');
+        return this.respond(
+          `Error reading the PDF: ${result.error}\n\nThe file might be corrupted or in an unsupported format.`,
+          { suggestions: ['Search for more statements', 'Show transactions'] }
+        );
+      }
+
+      // Success! Clear pending state and show extracted content
+      context.remember('pending_statement', { ...pendingData, waitingForPassword: false }, 'context');
+
+      const bankLabel = pendingData.bankName || 'Bank';
+      const preview = result.text.length > 2000 ? result.text.slice(0, 2000) + '\n\n_...truncated_' : result.text;
+
+      let text = `**${bankLabel} Statement Opened Successfully** (${result.pages} page${result.pages !== 1 ? 's' : ''})\n\n`;
+      text += `📄 **${pdfAttachment.filename}**\n\n`;
+      text += '```\n' + preview + '\n```\n\n';
+      text += 'I can analyze this statement for you — transactions, balances, or any specific details.';
+
+      // Store extracted text in memory for follow-up questions
+      context.remember(`statement_text_${pendingData.statementKey}`, {
+        text: result.text,
+        pages: result.pages,
+        bankName: pendingData.bankName,
+        filename: pdfAttachment.filename,
+      }, 'context');
+
+      return this.respond(text, {
+        suggestions: ['Summarize transactions', 'Show closing balance', 'List all debits', 'Show monthly summary'],
+      });
+    } catch (err: any) {
+      context.remember('pending_statement', { ...pendingData, waitingForPassword: false }, 'context');
+      return this.respond(
+        `Something went wrong while processing the statement: ${err?.message || 'Unknown error'}\n\nPlease try again.`,
+        { suggestions: ['Try again', 'Search statements'] }
+      );
+    }
   }
 
   // ─── Transaction Alerts ──────────────────────────────

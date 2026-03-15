@@ -243,6 +243,25 @@ export class IntegrationGateway extends EventEmitter<GatewayEvents> {
   }
 
   /**
+   * Download an attachment from a connected integration (e.g., Gmail PDF).
+   */
+  async downloadAttachment(connectionId: string, messageId: string, attachmentId: string): Promise<Buffer | null> {
+    const connection = this.connections.get(connectionId);
+    if (!connection) return null;
+
+    const adapter = this.adapters.get(connection.integrationId);
+    if (!adapter || !connection.tokens) return null;
+
+    // Currently only Gmail adapter supports attachment downloads
+    if ('downloadAttachment' in adapter && typeof (adapter as any).downloadAttachment === 'function') {
+      const tokens = await this.ensureFreshTokens(connection, adapter);
+      return (adapter as any).downloadAttachment(tokens.accessToken, messageId, attachmentId);
+    }
+
+    return null;
+  }
+
+  /**
    * Disconnect an integration.
    */
   disconnect(connectionId: string): void {

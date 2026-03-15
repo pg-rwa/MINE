@@ -113,7 +113,7 @@ export class GmailAdapter implements IntegrationAdapter {
       const results = await Promise.all(
         batch.map(async (msgRef) => {
           const msg = await this.getMessage(tokens.accessToken, msgRef.id);
-          return this.parseEmail(msg);
+          return this.parseEmail(msg, msgRef.id);
         })
       );
       for (const parsed of results) {
@@ -147,6 +147,41 @@ export class GmailAdapter implements IntegrationAdapter {
     return res.json();
   }
 
+  /**
+   * Download a specific attachment from a Gmail message.
+   * Returns the raw attachment data as a Buffer.
+   */
+  async downloadAttachment(
+    accessToken: string,
+    messageId: string,
+    attachmentId: string
+  ): Promise<Buffer> {
+    const res = await fetch(
+      `https://gmail.googleapis.com/gmail/v1/users/me/messages/${messageId}/attachments/${attachmentId}`,
+      { headers: { Authorization: `Bearer ${accessToken}` } }
+    );
+    const data = await res.json() as any;
+    // Gmail returns base64url-encoded data
+    const base64 = (data.data || '').replace(/-/g, '+').replace(/_/g, '/');
+    return Buffer.from(base64, 'base64');
+  }
+
+  /**
+   * Find attachment IDs for a given message.
+   * Returns array of { attachmentId, filename, mimeType, size }.
+   */
+  getAttachmentIds(msg: any): Array<{ attachmentId: string; filename: string; mimeType: string; size: number }> {
+    const parts = msg.payload?.parts || [];
+    return parts
+      .filter((p: any) => p.filename && p.filename.length > 0 && p.body?.attachmentId)
+      .map((p: any) => ({
+        attachmentId: p.body.attachmentId,
+        filename: p.filename,
+        mimeType: p.mimeType || 'application/octet-stream',
+        size: p.body?.size || 0,
+      }));
+  }
+
   private buildSearchQuery(options?: FetchOptions): string {
     const parts: string[] = [];
 
@@ -155,10 +190,26 @@ export class GmailAdapter implements IntegrationAdapter {
       parts.push(`after:${dateStr}`);
     }
 
-    // If agent provided specific keywords, use those for targeted search
+    // If agent provided structured keywords, use AND logic between groups
+    // e.g. bank:"sharjah islamic bank" + type:"statement" → BOTH must match
     if (options?.keywords && options.keywords.length > 0) {
-      const keywordQuery = options.keywords.map(k => `"${k}"`).join(' OR ');
-      parts.push(`(${keywordQuery})`);
+      const { entityKeywords, typeKeywords } = this.classifyKeywords(options.keywords);
+
+      if (entityKeywords.length > 0 && typeKeywords.length > 0) {
+        // AND between entity (bank name) and document type — this is critical
+        // for searches like "SIB statement" to not return random statements
+        const entityPart = entityKeywords.length === 1
+          ? `"${entityKeywords[0]}"`
+          : `(${entityKeywords.map(k => `"${k}"`).join(' OR ')})`;
+        const typePart = typeKeywords.length === 1
+          ? `"${typeKeywords[0]}"`
+          : `(${typeKeywords.map(k => `"${k}"`).join(' OR ')})`;
+        parts.push(`${entityPart} ${typePart}`);
+      } else {
+        // Single group — just OR them together
+        const keywordQuery = options.keywords.map(k => `"${k}"`).join(' OR ');
+        parts.push(`(${keywordQuery})`);
+      }
       return parts.join(' ');
     }
 
@@ -168,9 +219,36 @@ export class GmailAdapter implements IntegrationAdapter {
     return parts.join(' ');
   }
 
+  /**
+   * Classify keywords into entity names (banks, companies) vs document types
+   * so we can use AND logic between them in Gmail search.
+   */
+  private classifyKeywords(keywords: string[]): { entityKeywords: string[]; typeKeywords: string[] } {
+    const documentTypes = new Set([
+      'statement', 'e-statement', 'loan', 'emi', 'mortgage', 'insurance',
+      'investment', 'mutual fund', 'fixed deposit', 'fd', 'rd',
+      'transaction', 'balance', 'account summary', 'monthly report',
+      'credit card', 'debit card', 'bill', 'invoice',
+    ]);
+
+    const entityKeywords: string[] = [];
+    const typeKeywords: string[] = [];
+
+    for (const kw of keywords) {
+      const lower = kw.toLowerCase();
+      if (documentTypes.has(lower)) {
+        typeKeywords.push(kw);
+      } else {
+        entityKeywords.push(kw);
+      }
+    }
+
+    return { entityKeywords, typeKeywords };
+  }
+
   // ─── Email Parsing Engine ──────────────────────────
 
-  private parseEmail(msg: any): NormalizedEntry | null {
+  private parseEmail(msg: any, messageId?: string): NormalizedEntry | null {
     const headers = msg.payload?.headers || [];
     const subject = this.getHeader(headers, 'Subject') || '';
     const from = this.getHeader(headers, 'From') || '';
@@ -199,7 +277,7 @@ export class GmailAdapter implements IntegrationAdapter {
 
     // Bank statement with attachment (password-protected PDFs)
     if (this.isStatement(from, subject, msg)) {
-      return this.parseStatement(subject, body, from, date, msg);
+      return this.parseStatement(subject, body, from, date, msg, messageId);
     }
 
     return null;
@@ -212,9 +290,19 @@ export class GmailAdapter implements IntegrationAdapter {
       /statement|account\s*summary|monthly\s*report|loan\s*details/i.test(combined);
   }
 
-  private parseStatement(subject: string, body: string, from: string, date: Date, msg: any): NormalizedEntry {
+  private parseStatement(subject: string, body: string, from: string, date: Date, msg: any, messageId?: string): NormalizedEntry {
     const attachments = this.getAttachmentInfo(msg);
+    const attachmentIds = this.getAttachmentIds(msg);
     const passwordHint = this.detectPasswordHint(body);
+    const hasPdfAttachment = attachments.some(a =>
+      a.mimeType === 'application/pdf' || a.filename.toLowerCase().endsWith('.pdf')
+    );
+
+    // Bank statement PDFs are almost always password-protected (DOB, PAN, account number)
+    // even when the email body doesn't mention it explicitly.
+    // Mark as likely protected if it's a PDF from a known bank domain.
+    const fromBank = this.isFromBankDomain(from);
+    const likelyProtected = hasPdfAttachment && (!!passwordHint || fromBank);
 
     return {
       category: 'transactions',
@@ -227,11 +315,22 @@ export class GmailAdapter implements IntegrationAdapter {
         parsedFrom: 'email',
         hasAttachment: attachments.length > 0,
         attachments: attachments.map(a => ({ name: a.filename, mimeType: a.mimeType, size: a.size })),
-        passwordProtected: !!passwordHint,
-        passwordHint: passwordHint || undefined,
+        // Store Gmail message ID and attachment IDs so agent can download the PDF later
+        messageId: messageId || undefined,
+        attachmentIds: attachmentIds.map(a => ({ id: a.attachmentId, filename: a.filename, mimeType: a.mimeType })),
+        passwordProtected: likelyProtected,
+        passwordHint: passwordHint || (likelyProtected ? 'Usually your date of birth (DDMMYYYY), PAN number, or last 4 digits of account number' : undefined),
       },
       timestamp: date,
     };
+  }
+
+  /**
+   * Check if the sender is from a known bank domain.
+   */
+  private isFromBankDomain(from: string): boolean {
+    const fromLower = from.toLowerCase();
+    return GmailAdapter.BANK_DOMAINS.some(b => fromLower.includes(b)) || /bank|financial/i.test(from);
   }
 
   private hasAttachments(msg: any): boolean {
@@ -264,18 +363,19 @@ export class GmailAdapter implements IntegrationAdapter {
     return null;
   }
 
+  private static readonly BANK_DOMAINS = [
+    // India
+    'hdfcbank', 'icicibank', 'sbi', 'axisbank', 'kotak', 'yesbank', 'indusind', 'pnb', 'bankofbaroda', 'idfc', 'rbl',
+    // UAE / Middle East
+    'sib.ae', 'sharjahislamic', 'emiratesnbd', 'adcb', 'fab', 'mashreq', 'dib', 'rakbank', 'cbd', 'nbf', 'ajmanbank', 'sc.com',
+    // US / Europe
+    'chase', 'bofa', 'wellsfargo', 'citi', 'capitalone', 'hsbc', 'barclays', 'revolut', 'wise',
+  ];
+
   private isBankAlert(from: string, subject: string): boolean {
-    const bankDomains = [
-      // India
-      'hdfcbank', 'icicibank', 'sbi', 'axisbank', 'kotak', 'yesbank', 'indusind', 'pnb', 'bankofbaroda', 'idfc', 'rbl',
-      // UAE / Middle East
-      'sib.ae', 'sharjahislamic', 'emiratesnbd', 'adcb', 'fab', 'mashreq', 'dib', 'rakbank', 'cbd', 'nbf', 'ajmanbank', 'sc.com',
-      // US / Europe
-      'chase', 'bofa', 'wellsfargo', 'citi', 'capitalone', 'hsbc', 'barclays', 'revolut', 'wise',
-    ];
     const fromLower = from.toLowerCase();
     const subjectLower = subject.toLowerCase();
-    return (bankDomains.some(b => fromLower.includes(b)) || /bank|financial/i.test(from)) &&
+    return (GmailAdapter.BANK_DOMAINS.some(b => fromLower.includes(b)) || /bank|financial/i.test(from)) &&
       /debit|credit|transaction|transfer|payment|statement|balance|loan|emi|account/i.test(subjectLower);
   }
 

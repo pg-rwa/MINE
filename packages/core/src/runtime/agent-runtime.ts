@@ -82,6 +82,9 @@ export interface AgentContext {
 
   /** Search a connected integration for specific keywords (on-demand) */
   searchIntegration(integrationId: string, keywords: string[]): Promise<Array<{ category: string; key: string; data: Record<string, unknown> }>>;
+
+  /** Download an attachment from a connected integration (e.g., Gmail PDF) */
+  downloadAttachment(integrationId: string, messageId: string, attachmentId: string): Promise<Buffer | null>;
 }
 
 interface RuntimeEvents {
@@ -459,6 +462,17 @@ export class AgentRuntime extends EventEmitter<RuntimeEvents> {
           return entries.map(e => ({ category: e.category, key: e.key, data: e.data }));
         } catch {
           return [];
+        }
+      },
+
+      downloadAttachment: async (integrationId: string, messageId: string, attachmentId: string): Promise<Buffer | null> => {
+        if (!this.integrations) return null;
+        const conn = this.integrations.findUserConnection(userId, integrationId);
+        if (!conn) return null;
+        try {
+          return await this.integrations.downloadAttachment(conn.id, messageId, attachmentId);
+        } catch {
+          return null;
         }
       },
     };
