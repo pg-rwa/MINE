@@ -397,7 +397,7 @@ export class EmailAgent extends BaseAgent {
 
   /**
    * Handle user clicking on a specific search result.
-   * Downloads the email's PDF attachment, tries to open it.
+   * Fetches the email from Gmail, downloads PDF attachment, tries to open it.
    * Only asks for password if the PDF is actually encrypted.
    */
   private async handleResultSelection(key: string, context: AgentContext): Promise<AgentResponse> {
@@ -411,57 +411,67 @@ export class EmailAgent extends BaseAgent {
       });
     }
 
-    const result = searchData.results.find(r => r.key === key);
-    if (!result) {
+    const selectedResult = searchData.results.find(r => r.key === key);
+    if (!selectedResult) {
       return this.respond("Couldn't find that result. It may have expired. Let me search again.", {
         suggestions: ['Search statements'],
       });
     }
 
-    const d = result.data;
+    const d = selectedResult.data;
     const bankName = searchData.bankName || '';
     const label = (d.description || d.subject || 'Statement') as string;
     const dateStr = d.date ? new Date(d.date as string).toLocaleDateString() : '';
 
-    let text = `**Opening: ${label}**\n`;
-    if (dateStr) text += `Date: ${dateStr}\n`;
-    if (d.source) text += `From: ${d.source}\n`;
+    const gmail = context.checkIntegration('gmail');
+    if (!gmail.connected) {
+      return this.respond("Gmail is disconnected. Please reconnect first.", { suggestions: ['Reconnect Gmail'] });
+    }
 
-    // Check if this result has a PDF attachment with messageId/attachmentId
-    const messageId = d.messageId as string | undefined;
-    const attachmentIds = d.attachmentIds as Array<{ id: string; filename: string; mimeType: string }> | undefined;
+    // Get messageId — either from stored data, or re-search Gmail to find it
+    let messageId = d.messageId as string | undefined;
+    let attachmentIds = d.attachmentIds as Array<{ id: string; filename: string; mimeType: string }> | undefined;
+
+    // If we don't have messageId/attachmentIds, re-fetch from Gmail using keywords
+    // This handles entries that were parsed before we started storing messageId
+    if (!messageId || !attachmentIds || attachmentIds.length === 0) {
+      const freshResults = await context.searchIntegration('gmail', searchData.keywords);
+      const freshMatch = freshResults.find(r => r.key === key);
+      if (freshMatch) {
+        messageId = freshMatch.data.messageId as string | undefined;
+        attachmentIds = freshMatch.data.attachmentIds as Array<{ id: string; filename: string; mimeType: string }> | undefined;
+      }
+    }
+
     const pdfAttachment = attachmentIds?.find(a =>
       a.mimeType === 'application/pdf' || a.filename.toLowerCase().endsWith('.pdf')
     );
 
     if (!messageId || !pdfAttachment) {
       // No downloadable PDF — show the email content we have
-      text += '\nThis email doesn\'t have a downloadable PDF attachment. Here\'s what I extracted from the email body:\n\n';
+      let text = `**${label}**\n`;
+      if (dateStr) text += `Date: ${dateStr}\n`;
+      if (d.source) text += `From: ${d.source}\n`;
+      text += '\nThis email doesn\'t have a PDF attachment. Here\'s the email content:\n\n';
       const bodyPreview = (d.body as string) || (d.description as string) || 'No content available';
       text += bodyPreview.slice(0, 1000);
       return this.respond(text, { suggestions: ['Search for more', 'Show transactions'] });
     }
 
     // Download the PDF from Gmail
-    text += `\n📎 Downloading **${pdfAttachment.filename}**...`;
-
-    const gmail = context.checkIntegration('gmail');
-    if (!gmail.connected) {
-      return this.respond(text + '\n\nGmail is disconnected. Please reconnect first.', { suggestions: ['Reconnect Gmail'] });
-    }
-
     try {
       const pdfBuffer = await context.downloadAttachment('gmail', messageId, pdfAttachment.id);
       if (!pdfBuffer) {
-        return this.respond(text + '\n\nFailed to download the PDF. Please try again.', { suggestions: ['Try again'] });
+        return this.respond(`Failed to download **${pdfAttachment.filename}** from Gmail. Please try again.`, {
+          suggestions: ['Try again'],
+        });
       }
 
       // Try to open the PDF WITHOUT a password first
-      const result = await this.extractPdfAsync(pdfBuffer, undefined);
+      const parseResult = await this.extractPdfAsync(pdfBuffer, undefined);
 
-      if (result.error === 'password_required') {
+      if (parseResult.error === 'password_required') {
         // PDF is encrypted — ask for password
-        // Store context so we can retry with the password
         context.remember('pending_statement', {
           statementKey: key,
           bankName,
@@ -490,23 +500,23 @@ export class EmailAgent extends BaseAgent {
         });
       }
 
-      if (result.error) {
-        return this.respond(text + `\n\nError reading PDF: ${result.error}`, {
+      if (parseResult.error) {
+        return this.respond(`Error reading **${pdfAttachment.filename}**: ${parseResult.error}`, {
           suggestions: ['Try again', 'Show other results'],
         });
       }
 
       // Success — PDF opened without password
-      const preview = result.text.length > 2000 ? result.text.slice(0, 2000) + '\n\n_...truncated_' : result.text;
+      const preview = parseResult.text.length > 2000 ? parseResult.text.slice(0, 2000) + '\n\n_...truncated_' : parseResult.text;
 
-      let successText = `**${bankName ? bankName + ' ' : ''}Statement Opened** (${result.pages} page${result.pages !== 1 ? 's' : ''})\n\n`;
+      let successText = `**${bankName ? bankName + ' ' : ''}Statement Opened** (${parseResult.pages} page${parseResult.pages !== 1 ? 's' : ''})\n\n`;
       successText += `📄 **${pdfAttachment.filename}**\n\n`;
       successText += '```\n' + preview + '\n```\n\n';
       successText += 'I can analyze this statement — transactions, balances, or any specific details.';
 
       context.remember(`statement_text_${key}`, {
-        text: result.text,
-        pages: result.pages,
+        text: parseResult.text,
+        pages: parseResult.pages,
         bankName,
         filename: pdfAttachment.filename,
       }, 'context');
@@ -516,7 +526,7 @@ export class EmailAgent extends BaseAgent {
       });
 
     } catch (err: any) {
-      return this.respond(text + `\n\nSomething went wrong: ${err?.message || 'Unknown error'}`, {
+      return this.respond(`Something went wrong downloading the PDF: ${err?.message || 'Unknown error'}`, {
         suggestions: ['Try again', 'Show other results'],
       });
     }

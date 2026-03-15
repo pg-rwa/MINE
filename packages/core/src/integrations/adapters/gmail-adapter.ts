@@ -255,32 +255,47 @@ export class GmailAdapter implements IntegrationAdapter {
     const date = new Date(this.getHeader(headers, 'Date') || Date.now());
     const body = this.extractBody(msg.payload);
 
-    // Bank transaction alert
-    if (this.isBankAlert(from, subject)) {
-      return this.parseBankAlert(subject, body, from, date);
-    }
+    let entry: NormalizedEntry | null = null;
 
-    // Order confirmation
-    if (this.isOrderConfirmation(from, subject)) {
-      return this.parseOrderConfirmation(subject, body, from, date);
-    }
-
-    // Salary credit
-    if (this.isSalaryCredit(subject, body)) {
-      return this.parseSalaryCredit(subject, body, from, date);
-    }
-
-    // Bill/utility
-    if (this.isBillNotification(from, subject)) {
-      return this.parseBillNotification(subject, body, from, date);
-    }
-
-    // Bank statement with attachment (password-protected PDFs)
+    // Bank statement with attachment (password-protected PDFs) — check FIRST
+    // so "Consolidated Finance Statement" from a bank isn't misclassified as a generic alert
     if (this.isStatement(from, subject, msg)) {
-      return this.parseStatement(subject, body, from, date, msg, messageId);
+      entry = this.parseStatement(subject, body, from, date, msg, messageId);
+    }
+    // Bank transaction alert
+    else if (this.isBankAlert(from, subject)) {
+      entry = this.parseBankAlert(subject, body, from, date);
+    }
+    // Order confirmation
+    else if (this.isOrderConfirmation(from, subject)) {
+      entry = this.parseOrderConfirmation(subject, body, from, date);
+    }
+    // Salary credit
+    else if (this.isSalaryCredit(subject, body)) {
+      entry = this.parseSalaryCredit(subject, body, from, date);
+    }
+    // Bill/utility
+    else if (this.isBillNotification(from, subject)) {
+      entry = this.parseBillNotification(subject, body, from, date);
     }
 
-    return null;
+    // Inject messageId and attachment info into ALL entries so the agent
+    // can always go back to Gmail to fetch the email and download attachments
+    if (entry && messageId) {
+      entry.data.messageId = messageId;
+      if (!entry.data.attachmentIds) {
+        const attIds = this.getAttachmentIds(msg);
+        if (attIds.length > 0) {
+          entry.data.attachmentIds = attIds.map(a => ({ id: a.attachmentId, filename: a.filename, mimeType: a.mimeType }));
+          entry.data.hasAttachment = true;
+          if (!entry.data.attachments) {
+            entry.data.attachments = this.getAttachmentInfo(msg).map(a => ({ name: a.filename, mimeType: a.mimeType, size: a.size }));
+          }
+        }
+      }
+    }
+
+    return entry;
   }
 
   private isStatement(from: string, subject: string, msg: any): boolean {
