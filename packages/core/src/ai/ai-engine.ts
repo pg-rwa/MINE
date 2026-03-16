@@ -324,6 +324,68 @@ export class AIEngine {
     }
   }
 
+  /**
+   * Multi-turn conversation: sends actual structured message history to the AI provider.
+   * This gives the model proper conversation context instead of text-embedded history.
+   */
+  private async providerChatWithHistory(
+    provider: ProviderState,
+    model: string,
+    systemPrompt: string | undefined,
+    history: Array<{ role: string; content: string }>,
+    userMessage: string,
+    maxTokens: number
+  ): Promise<string> {
+    if (provider.type === 'claude') {
+      const client = provider.client as Anthropic;
+      // Build proper multi-turn messages array
+      const messages: Array<{ role: 'user' | 'assistant'; content: string }> = [];
+      for (const msg of history) {
+        const role = msg.role === 'user' ? 'user' as const : 'assistant' as const;
+        // Ensure alternating roles — Claude requires user/assistant alternation
+        if (messages.length > 0 && messages[messages.length - 1].role === role) {
+          // Merge consecutive same-role messages
+          messages[messages.length - 1].content += '\n' + msg.content;
+        } else {
+          messages.push({ role, content: msg.content });
+        }
+      }
+      // Ensure last history message isn't 'user' before we add the current user message
+      if (messages.length > 0 && messages[messages.length - 1].role === 'user') {
+        messages[messages.length - 1].content += '\n' + userMessage;
+      } else {
+        messages.push({ role: 'user', content: userMessage });
+      }
+      const response = await client.messages.create({
+        model,
+        max_tokens: maxTokens,
+        ...(systemPrompt ? { system: systemPrompt } : {}),
+        messages,
+      });
+      const textBlock = response.content.find(b => b.type === 'text');
+      return textBlock?.text ?? '';
+    } else {
+      const client = provider.client as OpenAI;
+      const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [];
+      if (systemPrompt) {
+        messages.push({ role: 'system', content: systemPrompt });
+      }
+      for (const msg of history) {
+        messages.push({
+          role: msg.role === 'user' ? 'user' : 'assistant',
+          content: msg.content,
+        } as OpenAI.Chat.Completions.ChatCompletionMessageParam);
+      }
+      messages.push({ role: 'user', content: userMessage });
+      const response = await client.chat.completions.create({
+        model,
+        max_tokens: maxTokens,
+        messages,
+      });
+      return response.choices[0]?.message?.content ?? '';
+    }
+  }
+
   // ─── Public API ──────────────────────────────────────
 
   /**
@@ -369,10 +431,17 @@ export class AIEngine {
   async chat(
     systemPrompt: string,
     userMessage: string,
-    options?: { maxTokens?: number; temperature?: number; tier?: TaskTier }
+    options?: { maxTokens?: number; temperature?: number; tier?: TaskTier; history?: Array<{ role: string; content: string }> }
   ): Promise<string> {
     const tier = options?.tier ?? 'smart';
     const maxTokens = options?.maxTokens ?? this.defaultMaxTokens;
+
+    // If history provided, use proper multi-turn conversation format
+    if (options?.history && options.history.length > 0) {
+      return this.callWithFailover(tier, (provider, model) =>
+        this.providerChatWithHistory(provider, model, systemPrompt, options.history!, userMessage, maxTokens)
+      );
+    }
 
     return this.callWithFailover(tier, (provider, model) =>
       this.providerChat(provider, model, systemPrompt, userMessage, maxTokens)

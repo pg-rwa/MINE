@@ -66,26 +66,32 @@ export abstract class BaseAgent implements IAgent {
 
     const systemPrompt = this.buildSystemPrompt(context, extraContext);
 
-    // Include recent conversation history for continuity
-    const history = context.getRecentHistory(6);
-    let userMessage = message.content;
-    if (history.length > 0) {
-      const historyText = history
-        .map(h => `${h.role === 'user' ? 'User' : 'You'}: ${h.content.slice(0, 200)}`)
-        .join('\n');
-      userMessage = `[Recent conversation]\n${historyText}\n\n[Current message]\n${message.content}`;
-    }
+    // Get recent conversation history — proper multi-turn for better memory
+    const history = context.getRecentHistory(20);
 
     // Use multimodal if message has attachments
     const aiAttachments = this.resolveAttachments(message);
     if (aiAttachments.length > 0) {
+      // For attachments, still embed history as text (multimodal API doesn't support history param)
+      let userMessage = message.content;
+      if (history.length > 0) {
+        const historyText = history
+          .map(h => `${h.role === 'user' ? 'User' : 'You'}: ${h.content.slice(0, 300)}`)
+          .join('\n');
+        userMessage = `[Recent conversation]\n${historyText}\n\n[Current message]\n${message.content}`;
+      }
       return context.aiEngine.chatWithAttachments(systemPrompt, userMessage, aiAttachments, {
-        maxTokens: 1024, // More tokens for document analysis
+        maxTokens: 1024,
       });
     }
 
-    return context.aiEngine.chat(systemPrompt, userMessage, {
+    // Pass structured history so the AI sees proper multi-turn conversation
+    return context.aiEngine.chat(systemPrompt, message.content, {
       maxTokens: 512,
+      history: history.map(h => ({
+        role: h.role,
+        content: h.content,
+      })),
     });
   }
 
