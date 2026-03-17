@@ -452,19 +452,21 @@ export class AIEngine {
       const result = await this.callWithFailover(tier, (provider, model) =>
         this.providerChatWithHistory(provider, model, systemPrompt, options.history!, userMessage, maxTokens)
       );
-      // If multi-turn failed, fall back to single-message with embedded history
-      if (result.startsWith('[AI error')) {
+      // If multi-turn failed (any AI error), fall back to single-message with embedded history
+      if (result.startsWith('[AI ')) {
         console.warn('AI Engine: Multi-turn failed, falling back to single-message with text history');
-        // Reset cooldowns so providers are available for the fallback attempt
+        // Reset ALL provider states so they're available for the fallback attempt
         for (const p of this.providers) {
-          if (p.cooldownUntil > Date.now()) {
+          if (p.client) {
+            p.available = true;
             p.cooldownUntil = 0;
             p.consecutiveErrors = 0;
           }
         }
         const historyText = options.history
           .filter(h => h.content?.trim())
-          .map(h => `${h.role === 'user' ? 'User' : 'Assistant'}: ${h.content.slice(0, 300)}`)
+          .slice(-10) // Limit to last 10 messages to avoid token overflow
+          .map(h => `${h.role === 'user' ? 'User' : 'Assistant'}: ${h.content.slice(0, 200)}`)
           .join('\n');
         const fallbackMsg = historyText
           ? `[Recent conversation]\n${historyText}\n\n[Current message]\n${userMessage}`
