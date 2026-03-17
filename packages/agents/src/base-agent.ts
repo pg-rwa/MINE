@@ -70,7 +70,7 @@ export abstract class BaseAgent implements IAgent {
     const history = context.getRecentHistory(20);
 
     // Use multimodal if message has attachments
-    const aiAttachments = this.resolveAttachments(message);
+    const aiAttachments = await this.resolveAttachments(message);
     if (aiAttachments.length > 0) {
       // For attachments, still embed history as text (multimodal API doesn't support history param)
       let userMessage = message.content;
@@ -99,7 +99,7 @@ export abstract class BaseAgent implements IAgent {
    * Resolve message attachments into AI-ready format.
    * Reads file contents from disk for images (base64) and documents (text extraction).
    */
-  protected resolveAttachments(message: Message): MessageAttachment[] {
+  protected async resolveAttachments(message: Message): Promise<MessageAttachment[]> {
     if (!message.attachments || message.attachments.length === 0) return [];
 
     const resolved: MessageAttachment[] = [];
@@ -112,10 +112,16 @@ export abstract class BaseAgent implements IAgent {
       try {
         // Resolve file path from URI
         const filePath = this.resolveFilePath(att.uri);
-        if (!filePath) continue;
+        if (!filePath) {
+          console.warn(`[Attachment] Could not resolve path for URI: ${att.uri}`);
+          continue;
+        }
 
         const fs = require('fs');
-        if (!fs.existsSync(filePath)) continue;
+        if (!fs.existsSync(filePath)) {
+          console.warn(`[Attachment] File not found at: ${filePath} (URI: ${att.uri})`);
+          continue;
+        }
 
         if (att.type === 'image' || mimeType.startsWith('image/')) {
           // Images: read as base64 for vision models
@@ -126,8 +132,30 @@ export abstract class BaseAgent implements IAgent {
             data: buffer.toString('base64'),
             filename,
           });
+        } else if (mimeType === 'application/pdf') {
+          // PDFs: async extraction with actual text parsing
+          const fs = require('fs');
+          const buffer = fs.readFileSync(filePath);
+          const result = await this.extractPdfAsync(buffer);
+          if (result.text) {
+            resolved.push({
+              type: 'file',
+              mimeType,
+              textContent: `[PDF: ${filename}]\n${result.text.slice(0, 50000)}`,
+              filename,
+            });
+          } else if (result.error === 'password_required') {
+            resolved.push({
+              type: 'file',
+              mimeType,
+              textContent: `[PDF: ${filename}] This PDF is password-protected. Please provide the password to extract its contents.`,
+              filename,
+            });
+          } else {
+            console.warn(`[Attachment] PDF extraction failed for ${filename}: ${result.error}`);
+          }
         } else {
-          // Documents: extract text content
+          // Other documents: text/csv/json/excel
           const textContent = this.extractTextFromFile(filePath, mimeType, filename);
           if (textContent) {
             resolved.push({
@@ -138,8 +166,8 @@ export abstract class BaseAgent implements IAgent {
             });
           }
         }
-      } catch {
-        // Skip unreadable attachments
+      } catch (err) {
+        console.warn(`[Attachment] Error processing ${filename}:`, err);
       }
     }
 
@@ -162,24 +190,12 @@ export abstract class BaseAgent implements IAgent {
       return text.slice(0, 50000); // Cap at 50k chars
     }
 
-    if (mimeType === 'application/pdf') {
-      return this.extractPdfText(filePath, filename);
-    }
-
     // Excel files — return a note about the file
     if (mimeType.includes('spreadsheet') || mimeType.includes('excel')) {
       return `[Excel file: ${filename}]\n(Spreadsheet uploaded. For best results, export as CSV and re-upload, or describe what data you need extracted.)`;
     }
 
     return null;
-  }
-
-  /**
-   * Extract text from a PDF file. Returns the text content or an error message.
-   */
-  protected extractPdfText(filePath: string, filename: string): string | null {
-    // PDF parsing is async — return a marker so the async AI flow picks it up
-    return `[PDF: ${filename}]\n[path:${filePath}]\n(PDF ready for extraction. Use extractPdfAsync for full text.)`;
   }
 
   /**
