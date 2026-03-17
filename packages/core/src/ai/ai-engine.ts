@@ -340,7 +340,10 @@ export class AIEngine {
       const client = provider.client as Anthropic;
       // Build proper multi-turn messages array
       const messages: Array<{ role: 'user' | 'assistant'; content: string }> = [];
+
+      // Filter out empty messages and build alternating turns
       for (const msg of history) {
+        if (!msg.content || !msg.content.trim()) continue;
         const role = msg.role === 'user' ? 'user' as const : 'assistant' as const;
         // Ensure alternating roles — Claude requires user/assistant alternation
         if (messages.length > 0 && messages[messages.length - 1].role === role) {
@@ -350,12 +353,19 @@ export class AIEngine {
           messages.push({ role, content: msg.content });
         }
       }
+
+      // Claude requires first message to be 'user'. Drop leading assistant messages.
+      while (messages.length > 0 && messages[0].role !== 'user') {
+        messages.shift();
+      }
+
       // Ensure last history message isn't 'user' before we add the current user message
       if (messages.length > 0 && messages[messages.length - 1].role === 'user') {
         messages[messages.length - 1].content += '\n' + userMessage;
       } else {
         messages.push({ role: 'user', content: userMessage });
       }
+
       const response = await client.messages.create({
         model,
         max_tokens: maxTokens,
@@ -371,6 +381,7 @@ export class AIEngine {
         messages.push({ role: 'system', content: systemPrompt });
       }
       for (const msg of history) {
+        if (!msg.content || !msg.content.trim()) continue;
         messages.push({
           role: msg.role === 'user' ? 'user' : 'assistant',
           content: msg.content,
@@ -438,9 +449,31 @@ export class AIEngine {
 
     // If history provided, use proper multi-turn conversation format
     if (options?.history && options.history.length > 0) {
-      return this.callWithFailover(tier, (provider, model) =>
+      const result = await this.callWithFailover(tier, (provider, model) =>
         this.providerChatWithHistory(provider, model, systemPrompt, options.history!, userMessage, maxTokens)
       );
+      // If multi-turn failed, fall back to single-message with embedded history
+      if (result.startsWith('[AI error')) {
+        console.warn('AI Engine: Multi-turn failed, falling back to single-message with text history');
+        // Reset cooldowns so providers are available for the fallback attempt
+        for (const p of this.providers) {
+          if (p.cooldownUntil > Date.now()) {
+            p.cooldownUntil = 0;
+            p.consecutiveErrors = 0;
+          }
+        }
+        const historyText = options.history
+          .filter(h => h.content?.trim())
+          .map(h => `${h.role === 'user' ? 'User' : 'Assistant'}: ${h.content.slice(0, 300)}`)
+          .join('\n');
+        const fallbackMsg = historyText
+          ? `[Recent conversation]\n${historyText}\n\n[Current message]\n${userMessage}`
+          : userMessage;
+        return this.callWithFailover(tier, (provider, model) =>
+          this.providerChat(provider, model, systemPrompt, fallbackMsg, maxTokens)
+        );
+      }
+      return result;
     }
 
     return this.callWithFailover(tier, (provider, model) =>
