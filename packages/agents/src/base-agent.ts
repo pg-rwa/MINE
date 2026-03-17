@@ -134,13 +134,20 @@ export abstract class BaseAgent implements IAgent {
     }
 
     // Pass structured history so the AI sees proper multi-turn conversation
-    return context.aiEngine.chat(systemPrompt, message.content, {
+    const result = await context.aiEngine.chat(systemPrompt, message.content, {
       maxTokens: 1024,
       history: history.map(h => ({
         role: h.role,
         content: h.content,
       })),
     });
+
+    // If AI returned an error, return empty so the agent falls back to rule-based response
+    if (result.startsWith('[AI ')) {
+      console.warn(`Agent ${context.agentId}: AI unavailable, falling back to rule-based response`);
+      return '';
+    }
+    return result;
   }
 
   /**

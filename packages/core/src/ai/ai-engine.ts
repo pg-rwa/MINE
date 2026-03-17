@@ -245,16 +245,33 @@ export class AIEngine {
 
   /**
    * Execute an AI call with automatic failover across providers.
+   * Retries once after a short delay if all providers fail with transient errors.
    */
   private async callWithFailover(
     tier: TaskTier,
-    callFn: (provider: ProviderState, model: string) => Promise<string>
+    callFn: (provider: ProviderState, model: string) => Promise<string>,
+    isRetry = false
   ): Promise<string> {
     const available = this.getAvailableProviders();
     if (available.length === 0) {
+      // If no providers are available and we haven't retried yet, reset cooldowns and try once more
+      if (!isRetry) {
+        const recoverable = this.providers.filter(p => p.client && p.cooldownUntil > 0);
+        if (recoverable.length > 0) {
+          console.log('AI Engine: All providers on cooldown, resetting for retry...');
+          for (const p of recoverable) {
+            p.cooldownUntil = 0;
+            p.consecutiveErrors = 0;
+            p.available = true;
+          }
+          await new Promise(resolve => setTimeout(resolve, 2000));
+          return this.callWithFailover(tier, callFn, true);
+        }
+      }
       return '[AI not configured — set ANTHROPIC_API_KEY and/or OPENAI_API_KEY]';
     }
 
+    let lastError: unknown;
     for (const provider of available) {
       const model = tier === 'fast' ? provider.config.models.fast : provider.config.models.smart;
       try {
@@ -262,9 +279,25 @@ export class AIEngine {
         this.markProviderSuccess(provider);
         return result;
       } catch (error) {
+        lastError = error;
         console.warn(`AI Engine: ${provider.type} (${model}) failed, trying next provider...`, error);
         this.markProviderError(provider, error);
       }
+    }
+
+    // All providers failed — retry once after a short delay for transient errors
+    if (!isRetry && !this.isAuthError(lastError)) {
+      console.log('AI Engine: All providers failed, retrying in 2s...');
+      // Reset non-auth providers for retry
+      for (const p of this.providers) {
+        if (p.client && !this.isAuthError(lastError)) {
+          p.available = true;
+          p.cooldownUntil = 0;
+          p.consecutiveErrors = 0;
+        }
+      }
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      return this.callWithFailover(tier, callFn, true);
     }
 
     return '[AI error — all providers unavailable, please try again later]';
