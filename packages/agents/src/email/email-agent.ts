@@ -58,6 +58,10 @@ export class EmailAgent extends BaseAgent {
     const content = message.content.toLowerCase();
     const intent = this.analyzeIntent(message, context);
 
+    // Cross-agent handoff: if another agent is better suited, navigate there directly
+    const handoff = this.tryCrossAgentHandoff(message, context);
+    if (handoff) return handoff;
+
     // ─── Handle user clicking a search result ("open:KEY") ───
     const openMatch = message.content.match(/^open:(.+)$/);
     if (openMatch) {

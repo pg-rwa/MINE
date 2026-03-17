@@ -26,6 +26,9 @@ export class ShoppingAgent extends BaseAgent {
   };
 
   async handleMessage(message: Message, context: AgentContext): Promise<AgentResponse> {
+    const handoff = this.tryCrossAgentHandoff(message, context);
+    if (handoff) return handoff;
+
     const vaultData = this.getVaultDataSummary(context, ['shopping_lists', 'orders']);
     const aiResponse = await this.generateAIResponse(message, context, vaultData || undefined);
     if (aiResponse) {

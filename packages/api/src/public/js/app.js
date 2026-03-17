@@ -259,6 +259,7 @@ const App = {
 
   async loadConversation(conversationId) {
     this.conversationId = conversationId;
+    this.toggleChatSidebar(false);
     await this.navigate('chat');
     // Scroll to bottom
     setTimeout(() => {
@@ -269,7 +270,21 @@ const App = {
 
   async newConversation() {
     this.conversationId = null;
+    this.toggleChatSidebar(false);
     await this.navigate('chat');
+  },
+
+  toggleChatSidebar(open) {
+    const sidebar = document.getElementById('chatSidebar');
+    const overlay = document.getElementById('chatSidebarOverlay');
+    if (!sidebar) return;
+    if (open) {
+      sidebar.classList.add('open');
+      if (overlay) overlay.classList.add('visible');
+    } else {
+      sidebar.classList.remove('open');
+      if (overlay) overlay.classList.remove('visible');
+    }
   },
 
   async deleteConversation(conversationId) {

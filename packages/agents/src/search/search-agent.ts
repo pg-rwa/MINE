@@ -27,6 +27,9 @@ export class SearchAgent extends BaseAgent {
   async handleMessage(message: Message, context: AgentContext): Promise<AgentResponse> {
     const intent = this.analyzeIntent(message, context);
 
+    const handoff = this.tryCrossAgentHandoff(message, context);
+    if (handoff) return handoff;
+
     // Try AI first for contextual responses
     const aiResponse = await this.generateAIResponse(message, context);
     if (aiResponse) {

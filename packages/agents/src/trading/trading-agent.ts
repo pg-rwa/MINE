@@ -29,6 +29,9 @@ export class TradingAgent extends BaseAgent {
     const content = message.content.toLowerCase();
     const intent = this.analyzeIntent(message, context);
 
+    const handoff = this.tryCrossAgentHandoff(message, context);
+    if (handoff) return handoff;
+
     // Try AI first for contextual responses
     const vaultData = this.getVaultDataSummary(context, ['investments']);
     const aiResponse = await this.generateAIResponse(message, context, vaultData || undefined);

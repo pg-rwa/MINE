@@ -30,6 +30,10 @@ export class PropertyAgent extends BaseAgent {
     const content = message.content.toLowerCase();
     const intent = this.analyzeIntent(message, context);
 
+    // Cross-agent handoff
+    const handoff = this.tryCrossAgentHandoff(message, context);
+    if (handoff) return handoff;
+
     // Form submissions
     if (message.content.trimStart().startsWith('{') || content.startsWith('save:')) {
       return this.handleFormSubmit(message, context);

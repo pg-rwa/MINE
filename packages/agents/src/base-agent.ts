@@ -46,6 +46,42 @@ export abstract class BaseAgent implements IAgent {
     return [];
   }
 
+  // ─── Cross-Agent Handoff ────────────────────────────
+
+  /**
+   * Check if this message should be handled by a different agent.
+   * If so, return a navigate action to switch the user there directly.
+   * Call this early in handleMessage() — returns null if no handoff needed.
+   */
+  protected tryCrossAgentHandoff(message: Message, context: AgentContext): AgentResponse | null {
+    const intent = this.analyzeIntent(message, context);
+    if (intent.dataSources.length === 0 && intent.crossAgentRefs.length === 0) return null;
+
+    const activeAgents = context.listActiveAgents();
+    const sources = [...new Set([...intent.dataSources, ...intent.crossAgentRefs])];
+    for (const source of sources) {
+      const sourceAgent = activeAgents.find(
+        a => a.id === source || a.description.toLowerCase().includes(source)
+      );
+      if (sourceAgent && sourceAgent.id !== this.manifest.id) {
+        return this.respond(
+          `This looks like something **${sourceAgent.name}** can handle directly. Let me take you there now...`,
+          {
+            actions: [{
+              type: 'navigate',
+              payload: {
+                agent: sourceAgent.id,
+                message: message.content,
+                autoSend: true,
+              },
+            }],
+          }
+        );
+      }
+    }
+    return null;
+  }
+
   // ─── AI-Powered Response Generation ─────────────────
 
   /**

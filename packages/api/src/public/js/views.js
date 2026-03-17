@@ -194,7 +194,8 @@ const Views = {
 
     return `
       <div class="chat-layout">
-        <div class="chat-sidebar">
+        <div class="chat-sidebar-overlay" id="chatSidebarOverlay" onclick="App.toggleChatSidebar(false)"></div>
+        <div class="chat-sidebar" id="chatSidebar">
           <div class="chat-sidebar-header">
             <span>Conversations</span>
             <button class="btn btn-sm btn-secondary" onclick="App.newConversation()">+ New</button>
@@ -203,6 +204,10 @@ const Views = {
         </div>
         <div class="chat-container">
           <div class="chat-agent-select">
+            <button class="mobile-history-btn" onclick="App.toggleChatSidebar(true)">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 8v4l3 3"/><circle cx="12" cy="12" r="10"/></svg>
+              History
+            </button>
             <span class="agent-chip ${activeAgentId === '' ? 'active' : ''}" data-agent="" onclick="App.selectChatAgent(null, this)">All Chats</span>
             ${active.map(a => `
               <span class="agent-chip ${activeAgentId === a.manifest.id ? 'active' : ''}" data-agent="${a.manifest.id}" onclick="App.selectChatAgent('${a.manifest.id}', this)">

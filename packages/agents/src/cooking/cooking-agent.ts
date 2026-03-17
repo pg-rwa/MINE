@@ -27,6 +27,9 @@ export class CookingAgent extends BaseAgent {
   async handleMessage(message: Message, context: AgentContext): Promise<AgentResponse> {
     const content = message.content.toLowerCase();
 
+    const handoff = this.tryCrossAgentHandoff(message, context);
+    if (handoff) return handoff;
+
     // Try AI first for contextual responses
     const vaultData = this.getVaultDataSummary(context, ['recipes', 'meal_plans']);
     const aiResponse = await this.generateAIResponse(message, context, vaultData || undefined);

@@ -487,7 +487,29 @@ body {
 }
 
 @media (max-width: 768px) {
-  .chat-sidebar { display: none; }
+  .chat-sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 280px;
+    height: 100vh;
+    z-index: 1000;
+    transform: translateX(-100%);
+    transition: transform 0.25s ease;
+    background: var(--bg-main);
+    border-right: 1px solid var(--border);
+    box-shadow: 2px 0 12px rgba(0,0,0,0.3);
+  }
+  .chat-sidebar.open { transform: translateX(0); }
+  .chat-sidebar-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.4);
+    z-index: 999;
+  }
+  .chat-sidebar-overlay.visible { display: block; }
+  .mobile-history-btn { display: flex !important; }
 }
 
 .chat-container {
@@ -496,6 +518,20 @@ body {
   height: calc(100vh - var(--topbar-h) - 48px);
   flex: 1;
   min-width: 0;
+}
+
+.mobile-history-btn {
+  display: none;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 100px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  color: var(--text-muted);
 }
 
 .chat-agent-select {
