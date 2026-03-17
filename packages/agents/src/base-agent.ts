@@ -135,7 +135,7 @@ export abstract class BaseAgent implements IAgent {
 
     // Pass structured history so the AI sees proper multi-turn conversation
     return context.aiEngine.chat(systemPrompt, message.content, {
-      maxTokens: 512,
+      maxTokens: 1024,
       history: history.map(h => ({
         role: h.role,
         content: h.content,
@@ -392,8 +392,9 @@ Your capabilities:
 ${capabilities}
 
 Guidelines:
-- Be concise but helpful. Keep responses under 150 words.
+- Be concise but helpful. Use as many words as needed to fully answer, but don't pad.
 - Directly address what the user is asking. Don't give generic introductions.
+- CRITICAL: Your "User's data context" section below contains ALL the user's saved data. This is the source of truth. When the user asks about their data, ALWAYS reference it. NEVER say "I don't have that information" or ask the user to re-enter data that is already in the context. If the data is there, use it.
 - If the user asks something that needs data from another agent's domain, DO NOT tell the user to "go ask" that agent. Instead, coordinate with the other agent directly — you have inter-agent communication. The user should never be a middleman between agents.
 - Use markdown formatting sparingly (bold for key info, numbered lists for data).
 - Be conversational and friendly, not robotic.
@@ -408,7 +409,7 @@ Guidelines:
     }
 
     if (extraContext) {
-      prompt += `\n\nUser's data context:\n${extraContext}`;
+      prompt += `\n\n=== USER'S SAVED DATA (source of truth — ALWAYS use this, never ask for data that's already here) ===\n${extraContext}\n=== END OF SAVED DATA ===`;
     }
 
     // Include cross-agent shared memory so agents know what others have learned
@@ -639,6 +640,7 @@ Guidelines:
 
   /**
    * Helper to get user data from vault as a formatted string for AI context.
+   * Shows ALL entries in a readable format so the AI has complete knowledge.
    */
   protected getVaultDataSummary(context: AgentContext, categories: DataCategory[]): string {
     const parts: string[] = [];
@@ -646,10 +648,40 @@ Guidelines:
       try {
         const entries = context.vault.getForAgent(context.userId, context.agentId, category);
         if (entries.length > 0) {
-          parts.push(`${category} (${entries.length} entries): ${JSON.stringify(entries.map(e => e.data).slice(0, 5))}`);
+          const formatted = entries.map((e, i) => {
+            const d = e.data;
+            // Build a readable one-liner per entry with key fields
+            const fields = Object.entries(d)
+              .filter(([k, v]) => v != null && v !== '' && k !== 'createdAt' && k !== '_formId' && k !== '_category')
+              .map(([k, v]) => `${k}: ${v}`)
+              .join(', ');
+            return `  ${i + 1}. ${fields}`;
+          }).join('\n');
+          parts.push(`${category} (${entries.length}):\n${formatted}`);
         }
       } catch {
-        // No permission for this category
+        // No permission for this category — try reading cross-agent data
+        try {
+          // For cross-agent reads, try with the category's typical agent ID
+          const agentForCategory: Record<string, string> = {
+            properties: 'property', tenants: 'property', rent_records: 'property',
+            investments: 'trading', bank_accounts: 'finance',
+          };
+          const targetAgent = agentForCategory[category];
+          if (targetAgent && targetAgent !== context.agentId) {
+            const entries = context.vault.getForAgent(context.userId, targetAgent, category);
+            if (entries.length > 0) {
+              const formatted = entries.map((e, i) => {
+                const fields = Object.entries(e.data)
+                  .filter(([k, v]) => v != null && v !== '' && k !== 'createdAt' && k !== '_formId' && k !== '_category')
+                  .map(([k, v]) => `${k}: ${v}`)
+                  .join(', ');
+                return `  ${i + 1}. ${fields}`;
+              }).join('\n');
+              parts.push(`${category} (${entries.length}, from ${targetAgent} agent):\n${formatted}`);
+            }
+          }
+        } catch { /* truly no access */ }
       }
     }
     return parts.join('\n');
