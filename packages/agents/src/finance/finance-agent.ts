@@ -190,6 +190,28 @@ export class FinanceAgent extends BaseAgent {
       const { _formId, _category, ...data } = parsed;
 
       const category = _category || 'expenses';
+
+      // Deduplication: check if a very similar entry was saved in the last 60 seconds
+      // This prevents accidental double-submissions from UI glitches or retries
+      try {
+        const existing = context.vault.getForAgent(context.userId, context.agentId, category);
+        const now = Date.now();
+        const recentDupe = existing.find(e => {
+          const created = e.data.createdAt ? new Date(e.data.createdAt as string).getTime() : 0;
+          if (now - created > 60000) return false; // Only check last 60s
+          const nameMatch = (e.data.name || e.data.source) === (data.name || data.source);
+          const amountMatch = String(e.data.amount) === String(data.amount);
+          return nameMatch && amountMatch;
+        });
+        if (recentDupe) {
+          const label = data.name || data.source || category;
+          return this.respond(
+            `"${label}" was already saved a moment ago — skipping duplicate.`,
+            { suggestions: [`Show my ${category}`, 'Add another', 'Monthly summary'] }
+          );
+        }
+      } catch { /* no permission to check — proceed with save */ }
+
       const key = `${category}-${Date.now()}`;
 
       try {
