@@ -52,14 +52,26 @@ export abstract class BaseAgent implements IAgent {
    * Check if this message should be handled by a different agent.
    * If so, return a navigate action to switch the user there directly.
    * Call this early in handleMessage() — returns null if no handoff needed.
+   *
+   * Only hands off when ANOTHER agent is the PRIMARY domain match.
+   * If this agent's domain is primary (or co-primary), it stays here and
+   * incorporates other agents' data via vault instead of redirecting.
    */
   protected tryCrossAgentHandoff(message: Message, context: AgentContext): AgentResponse | null {
     const intent = this.analyzeIntent(message, context);
-    if (intent.dataSources.length === 0 && intent.crossAgentRefs.length === 0) return null;
+
+    // Only consider dataSources for handoff (explicit data needs like "email", "bank")
+    // crossAgentRefs are secondary — the current agent should handle those by reading vault data
+    if (intent.dataSources.length === 0) return null;
+
+    // Don't hand off if the primary topic matches this agent's own domain
+    const myCategory = this.manifest.category;
+    const myKeywords = this.manifest.capabilities.flatMap(c => c.keywords);
+    const messageHasMyKeywords = myKeywords.some(kw => message.content.toLowerCase().includes(kw));
+    if (messageHasMyKeywords) return null;
 
     const activeAgents = context.listActiveAgents();
-    const sources = [...new Set([...intent.dataSources, ...intent.crossAgentRefs])];
-    for (const source of sources) {
+    for (const source of intent.dataSources) {
       const sourceAgent = activeAgents.find(
         a => a.id === source || a.description.toLowerCase().includes(source)
       );

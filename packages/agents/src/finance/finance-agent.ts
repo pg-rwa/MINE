@@ -46,8 +46,12 @@ export class FinanceAgent extends BaseAgent {
     if (handoff) return handoff;
 
     // For everything else — use AI with user's financial data as context
+    // Include property data (rent, property values) for complete financial picture
     const intent = this.analyzeIntent(message, context);
-    const vaultData = this.getVaultDataSummary(context, ['emis', 'expenses', 'income']);
+    const vaultData = this.getVaultDataSummary(context, [
+      'emis', 'expenses', 'income',
+      'properties', 'rent_records', 'investments', 'bank_accounts',
+    ]);
     const fullContext = vaultData || undefined;
     const aiResponse = await this.generateAIResponse(message, context, fullContext);
     if (aiResponse) {
@@ -364,6 +368,8 @@ export class FinanceAgent extends BaseAgent {
     let totalIncome = 0;
     let totalExpenses = 0;
     let totalEMIs = 0;
+    let totalRentIncome = 0;
+    let propertyValue = 0;
 
     try {
       const income = context.vault.getForAgent(context.userId, context.agentId, 'income');
@@ -380,19 +386,37 @@ export class FinanceAgent extends BaseAgent {
       totalEMIs = emis.reduce((s, e) => s + (Number(e.data.amount) || 0), 0);
     } catch { /* no permission */ }
 
-    const totalOutflow = totalExpenses + totalEMIs;
-    const net = totalIncome - totalOutflow;
+    // Cross-agent: pull property data for complete financial picture
+    try {
+      const properties = context.vault.getForAgent(context.userId, 'property', 'properties');
+      propertyValue = properties.reduce((s, e) => s + (Number(e.data.purchasePrice) || 0), 0);
+      totalRentIncome = properties.reduce((s, e) => s + (Number(e.data.rentAmount) || 0), 0);
+    } catch { /* property agent not installed or no permission */ }
 
-    const mainContent =
+    const totalOutflow = totalExpenses + totalEMIs;
+    const combinedIncome = totalIncome + totalRentIncome;
+    const net = combinedIncome - totalOutflow;
+
+    let mainContent =
       `Financial Summary:\n\n` +
-      `Income:   $${totalIncome}\n` +
+      `Income:   $${totalIncome}\n`;
+
+    if (totalRentIncome > 0) {
+      mainContent += `Rental:   $${totalRentIncome}\n`;
+    }
+
+    mainContent +=
       `Expenses: $${totalExpenses}\n` +
       `EMIs:     $${totalEMIs}\n` +
       `─────────────\n` +
       `Net:      $${net} ${net >= 0 ? '(surplus)' : '(deficit)'}`;
 
+    if (propertyValue > 0) {
+      mainContent += `\n\nProperty Assets: $${propertyValue}`;
+    }
+
     return this.respondWithContext(intent, context, mainContent, {
-      suggestions: ['Add income', 'Add expense', 'Show EMIs'],
+      suggestions: ['Add income', 'Add expense', 'Show EMIs', 'My properties'],
     });
   }
 
