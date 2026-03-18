@@ -10,7 +10,6 @@ import {
   Notifier,
   IntegrationGateway,
   WorkflowEngine,
-  AgentMarketplace,
   createAdapterRegistry,
   PersistenceLayer,
   ActivityBus,
@@ -23,8 +22,6 @@ import { createApp } from './app';
  */
 async function main() {
   // ─── Persistence (SQLite) ───────────────────────────
-  // Data survives restarts, upgrades, and redeployments.
-  // Set MINE_DB_PATH to control where the database lives (default: ./mine-data.db).
   const persistence = new PersistenceLayer();
 
   // ─── Initialize Core Services ──────────────────────
@@ -57,7 +54,6 @@ async function main() {
   const notifier = new Notifier();
   const integrations = new IntegrationGateway();
   const workflows = new WorkflowEngine();
-  const marketplace = new AgentMarketplace();
 
   // ─── Wire Persistence Into Services ─────────────────
   vault.enablePersistence(persistence);
@@ -78,7 +74,6 @@ async function main() {
   }
 
   // ─── Initialize Agent System ───────────────────────
-  // ─── Activity Bus (Live Streaming) ────────────────
   const activityBus = new ActivityBus();
 
   const runtime = new AgentRuntime(permissions, vault, auditLog, aiEngine);
@@ -90,11 +85,8 @@ async function main() {
   const router = new MessageRouter(runtime, aiEngine);
   router.setActivityBus(activityBus);
 
-  // Register all built-in agents
+  // Register the unified MINE agent
   registerBuiltInAgents(registry);
-
-  // Agent restoration happens lazily in app.ts on first request per user.
-  // This ensures the correct userId (from x-user-id header) is used.
 
   // ─── Create API Server ─────────────────────────────
   const app = await createApp({
@@ -109,7 +101,6 @@ async function main() {
     notifier,
     integrations,
     workflows,
-    marketplace,
     persistence,
     activityBus,
   });
@@ -119,7 +110,7 @@ async function main() {
 
   await app.listen({ port, host });
   console.log(`MINE API running at http://${host}:${port}`);
-  console.log(`Registered ${registry.listAvailable().length} agents`);
+  console.log(`Registered ${registry.listAvailable().length} agent(s)`);
   const providerStatus = aiEngine.getProviderStatus();
   if (providerStatus.some(p => p.available)) {
     const active = providerStatus.filter(p => p.available).map(p => p.name).join(' + ');
@@ -128,8 +119,7 @@ async function main() {
     console.log('AI Engine: Not configured — set ANTHROPIC_API_KEY and/or OPENAI_API_KEY for smart responses');
   }
 
-  // Graceful shutdown — handle SIGTERM from Railway/Docker/K8s
-  // Without this, every deploy shows red "command failed" errors in logs
+  // Graceful shutdown
   const shutdown = async (signal: string) => {
     console.log(`Received ${signal}, shutting down gracefully...`);
     try {

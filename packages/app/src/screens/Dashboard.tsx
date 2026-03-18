@@ -1,30 +1,26 @@
 /**
- * Dashboard — The main screen of MINE.
+ * Dashboard — Home screen of MINE.
  *
- * Shows a unified feed of:
- * - Insights from all active agents (prioritized)
- * - Quick-action widgets
- * - A universal command bar / chat input
+ * Shows insights and recent conversations, with a universal chat input.
  *
  * Layout:
  * ┌─────────────────────────────────────────┐
  * │  Good morning, Piyush          [Bell]   │
  * ├─────────────────────────────────────────┤
+ * │  Insights                               │
  * │  ┌─────────┐ ┌─────────┐ ┌─────────┐  │
  * │  │ EMI Due │ │ Rent    │ │ Bill    │  │
  * │  │ in 3d   │ │ Overdue │ │ Due     │  │
  * │  └─────────┘ └─────────┘ └─────────┘  │
  * ├─────────────────────────────────────────┤
- * │  Widgets (agent-provided)               │
+ * │  Recent Chats                           │
  * │  ┌───────────────────────────────────┐  │
- * │  │ Monthly Spending     [$3,450]     │  │
- * │  │ ████████████░░░░░░   Budget: $5k  │  │
+ * │  │ EMI Discussion        2h ago     │  │
+ * │  │ Property Overview     Yesterday  │  │
+ * │  │ Monthly Budget        3d ago     │  │
  * │  └───────────────────────────────────┘  │
- * │  ┌────────────────┐┌────────────────┐  │
- * │  │ Portfolio       ││ Today's Stats  │  │
- * │  │ +2.3% ↑        ││ 6,200 steps    │  │
- * │  └────────────────┘└────────────────┘  │
  * ├─────────────────────────────────────────┤
+ * │  [+ New Chat]                           │
  * │  [💬 Ask MINE anything...]              │
  * └─────────────────────────────────────────┘
  */
@@ -37,7 +33,7 @@ interface DashboardProps {
 
 export function Dashboard({ userName }: DashboardProps) {
   // This is the architectural skeleton — actual React Native implementation
-  // will hydrate with real agent data via the API.
+  // will hydrate with real data via the API.
   return null; // Placeholder for RN component tree
 }
 
@@ -46,13 +42,13 @@ export function Dashboard({ userName }: DashboardProps) {
  *
  * Data flow:
  *   GET /api/insights → InsightCards (sorted by priority)
- *   GET /api/agents/installed → Widget grid
- *   POST /api/messages → Universal chat input
+ *   GET /api/chat/conversations → Recent chat list
+ *   POST /api/messages → Universal chat input (creates new conversation)
  *
  * Key interactions:
- *   - Tap insight card → Navigate to agent detail or confirm action
- *   - Tap widget → Expand to agent view
- *   - Chat input → Routes message to best agent, shows response inline
+ *   - Tap insight card → Open relevant chat or confirm action
+ *   - Tap conversation → Open chat view
+ *   - "+ New Chat" → Start new conversation
+ *   - Chat input → Send message, auto-creates conversation
  *   - Bell icon → Notification center
- *   - Long press widget → Rearrange dashboard
  */

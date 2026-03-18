@@ -2,22 +2,22 @@ import { FastifyPluginCallback } from 'fastify';
 import { AppContext } from '../app';
 
 /**
- * Chat history routes — conversations persist across sessions.
+ * Chat/conversation routes — the core of the interactive chat platform.
+ * Conversations are topic-based, not agent-based.
  */
 export function chatRoutes(ctx: AppContext): FastifyPluginCallback {
   return (app, _opts, done) => {
 
-    // List user's conversations (most recent first, optionally filtered by agent)
-    app.get<{ Querystring: { limit?: string; offset?: string; agentId?: string } }>(
+    // List user's conversations (most recent first)
+    app.get<{ Querystring: { limit?: string; offset?: string } }>(
       '/conversations',
       async (request) => {
         const userId = (request as any).userId;
         const limit = parseInt(request.query.limit || '50', 10);
         const offset = parseInt(request.query.offset || '0', 10);
-        const agentId = request.query.agentId || undefined;
 
         if (!ctx.persistence) return [];
-        return ctx.persistence.getConversations(userId, limit, offset, agentId);
+        return ctx.persistence.getConversations(userId, limit, offset);
       }
     );
 

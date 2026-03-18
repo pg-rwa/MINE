@@ -1,23 +1,19 @@
 import { FastifyPluginCallback } from 'fastify';
-import fs from 'fs';
-import path from 'path';
 import { Message } from '@mine/core';
 import { AppContext } from '../app';
 
-const UPLOAD_DIR = path.join(process.cwd(), 'uploads');
-
 export function messageRoutes(ctx: AppContext): FastifyPluginCallback {
   return (app, _opts, done) => {
-    // Send a message (auto-routed or to specific agent)
-    // Now persists both the user message and agent response to chat history.
+    // Send a message — always handled by the unified MINE agent
     app.post<{ Body: { content: string; agentId?: string; conversationId?: string; attachments?: Array<{ type: string; uri: string; mimeType: string; filename: string }> } }>('/', async (request) => {
       const userId = (request as any).userId;
-      const { content, agentId, conversationId: existingConvId, attachments: rawAttachments } = request.body;
+      const { content, conversationId: existingConvId, attachments: rawAttachments } = request.body;
 
-      // Use existing conversation or start a new one
       const conversationId = existingConvId || crypto.randomUUID();
 
-      // Process attachments: resolve URIs to actual content for AI processing
+      // Always route to the unified MINE agent
+      const agentId = 'mine';
+
       const attachments = (rawAttachments || []).map(a => ({
         type: a.type as 'file' | 'image' | 'link' | 'data',
         uri: a.uri,
@@ -44,8 +40,8 @@ export function messageRoutes(ctx: AppContext): FastifyPluginCallback {
         createdAt: message.timestamp,
       });
 
-      // Route and get response
-      const response = await ctx.router.route(message);
+      // Handle directly via runtime (bypass router — single agent, no routing needed)
+      const response = await ctx.runtime.handleMessage(agentId, message);
 
       // Save agent response to history
       ctx.persistence?.saveMessage({
@@ -62,7 +58,7 @@ export function messageRoutes(ctx: AppContext): FastifyPluginCallback {
         createdAt: response.timestamp,
       });
 
-      // Auto-generate conversation title from first AI response
+      // Auto-generate conversation title from first message
       if (!existingConvId && ctx.persistence) {
         const title = await generateTitle(ctx, content, response.content);
         ctx.persistence.updateConversationTitle(conversationId, title);

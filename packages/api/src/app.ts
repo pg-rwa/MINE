@@ -15,7 +15,6 @@ import {
   Notifier,
   IntegrationGateway,
   WorkflowEngine,
-  AgentMarketplace,
   PersistenceLayer,
   ActivityBus,
 } from '@mine/core';
@@ -41,7 +40,6 @@ export interface AppContext {
   notifier: Notifier;
   integrations: IntegrationGateway;
   workflows: WorkflowEngine;
-  marketplace: AgentMarketplace;
   persistence: PersistenceLayer | null;
   activityBus: ActivityBus | null;
 }
@@ -49,7 +47,7 @@ export interface AppContext {
 export async function createApp(ctx: AppContext) {
   const app = Fastify({
     logger: true,
-    trustProxy: true,  // Required behind Railway/cloud reverse proxies for correct protocol detection
+    trustProxy: true,
   });
 
   await app.register(cors, { origin: true });
@@ -58,21 +56,29 @@ export async function createApp(ctx: AppContext) {
   app.decorateRequest('userId', '');
   const restoredUsers = new Set<string>();
   app.addHook('onRequest', async (request) => {
-    // In production: verify JWT, extract userId
     const userId = request.headers['x-user-id'] as string || 'demo-user';
     (request as any).userId = userId;
 
-    // Lazily restore installed agents on first request per user.
-    // This ensures agents survive redeployments regardless of which userId is used.
+    // Lazily install + activate the MINE agent on first request per user
     if (!restoredUsers.has(userId)) {
       restoredUsers.add(userId);
       try {
-        const count = await ctx.runtime.restoreAgents(userId, ctx.registry);
-        if (count > 0) {
-          request.log.info(`Restored ${count} agent(s) for user ${userId}`);
+        // Try restoring agents from persistence
+        await ctx.runtime.restoreAgents(userId, ctx.registry);
+
+        // Always ensure the unified MINE agent is installed and active
+        const agents = ctx.runtime.listAgents();
+        const hasMine = agents.some(a => a.manifest.id === 'mine' && a.active);
+        if (!hasMine) {
+          const agent = ctx.registry.create('mine');
+          if (agent) {
+            await ctx.runtime.install(agent, userId);
+            await ctx.runtime.activate('mine', userId);
+            request.log.info(`Installed MINE agent for user ${userId}`);
+          }
         }
       } catch (err) {
-        request.log.warn(`Failed to restore agents for user ${userId}: ${err}`);
+        request.log.warn(`Failed to setup agents for user ${userId}: ${err}`);
       }
     }
   });
@@ -98,7 +104,7 @@ export async function createApp(ctx: AppContext) {
   // Health check
   app.get('/health', async () => ({
     status: 'ok',
-    version: '0.1.0',
+    version: '2.0.0',
     ai: {
       available: ctx.aiEngine.isAvailable,
       providers: ctx.aiEngine.getProviderStatus(),

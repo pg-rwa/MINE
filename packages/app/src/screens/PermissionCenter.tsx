@@ -1,41 +1,39 @@
 /**
- * PermissionCenter — Full transparency into what agents can access.
+ * PermissionCenter — Data access and privacy settings.
+ *
+ * Since MINE is a single unified agent, permissions are shown
+ * by data category rather than by agent.
  *
  * Layout:
  * ┌─────────────────────────────────────────┐
- * │  Privacy & Permissions                  │
+ * │  Privacy & Data                         │
  * ├─────────────────────────────────────────┤
  * │                                         │
- * │  Finance Agent                          │
+ * │  Data Access                            │
  * │  ┌─────────────────────────────────┐    │
- * │  │ ✅ Transactions    [Read]  30d  │    │
- * │  │ ✅ Income          [Read]  30d  │    │
- * │  │ ✅ Expenses        [R/W]   30d  │    │
- * │  │ ⬚ Bank Accounts   [—]     —    │    │
- * │  │ ⬚ Investments     [—]     —    │    │
- * │  │                                 │    │
- * │  │ [Revoke All]  [View Audit Log]  │    │
+ * │  │ ✅ Finances (EMIs, expenses)    │    │
+ * │  │ ✅ Properties & Tenants         │    │
+ * │  │ ✅ Health & Fitness             │    │
+ * │  │ ✅ Shopping & Orders            │    │
+ * │  │ ✅ Email & Integrations         │    │
  * │  └─────────────────────────────────┘    │
  * │                                         │
- * │  Property Agent                         │
+ * │  Integrations                           │
  * │  ┌─────────────────────────────────┐    │
- * │  │ ✅ Properties      [R/W]  Perm  │    │
- * │  │ ✅ Tenants         [R/W]  Perm  │    │
- * │  │ ✅ Rent Records    [R/W]  90d   │    │
- * │  │                                 │    │
- * │  │ [Revoke All]  [View Audit Log]  │    │
+ * │  │ 📧 Gmail           [Connected] │    │
+ * │  │ 🏦 Bank (Plaid)    [Connect]   │    │
  * │  └─────────────────────────────────┘    │
  * │                                         │
- * │  ──── Data Export ────                  │
+ * │  ──── Data Management ────             │
  * │  [Export All My Data]                   │
  * │  [Delete All My Data]                   │
+ * │  [View Audit Log]                       │
  * └─────────────────────────────────────────┘
  *
  * Data flow:
  *   GET /api/permissions → All active permissions
- *   GET /api/insights/audit → Agent activity log
- *   POST /api/permissions/revoke/:id → Revoke
  *   GET /api/vault/export → GDPR export
+ *   DELETE /api/vault/purge → Delete all data
  */
 
 import React from 'react';

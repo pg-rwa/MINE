@@ -1,40 +1,44 @@
 /**
- * AgentStore — Browse, install, and manage agents.
+ * Settings — App configuration and integrations.
+ *
+ * Replaces the old Agent Store. Since MINE is now a single unified agent,
+ * there's no marketplace or agent installation needed.
  *
  * Layout:
  * ┌─────────────────────────────────────────┐
- * │  Agent Store              [Search]      │
+ * │  Settings                               │
  * ├─────────────────────────────────────────┤
- * │  [Featured]  [Categories]  [Installed]  │
- * ├─────────────────────────────────────────┤
- * │  Featured Agents                        │
- * │  ┌────────────────┐┌────────────────┐  │
- * │  │ 🏦 Finance     ││ 🏠 Property    │  │
- * │  │ Track money    ││ Manage tenants │  │
- * │  │ [Installed ✓]  ││ [Install]      │  │
- * │  └────────────────┘└────────────────┘  │
+ * │  Integrations                           │
+ * │  ┌───────────────────────────────────┐  │
+ * │  │ 📧 Gmail           [Connected ✓] │  │
+ * │  │ 📅 Google Calendar  [Connect]     │  │
+ * │  │ 🏦 Bank Accounts   [Connect]     │  │
+ * │  │ 💬 Telegram        [Connect]     │  │
+ * │  └───────────────────────────────────┘  │
  * │                                         │
- * │  Categories                             │
- * │  💰 Finance  🏠 Property  💪 Health    │
- * │  🛒 Shopping  📱 Social   📚 Education │
- * │  ⚡ Utility   📦 Delivery  🍳 Lifestyle│
+ * │  Data & Privacy                         │
+ * │  ┌───────────────────────────────────┐  │
+ * │  │ Export All Data (GDPR)            │  │
+ * │  │ Delete All Data                   │  │
+ * │  │ Permissions                       │  │
+ * │  └───────────────────────────────────┘  │
  * │                                         │
- * │  Community Agents                       │
- * │  ┌────────────────┐┌────────────────┐  │
- * │  │ ✈️ Flight      ││ 🌤 Weather     │  │
- * │  │ Tracker        ││ Agent          │  │
- * │  │ ⭐ 4.8 (1.2k)  ││ ⭐ 4.5 (890)   │  │
- * │  └────────────────┘└────────────────┘  │
+ * │  About                                  │
+ * │  MINE v2.0.0 — Your personal AI        │
  * └─────────────────────────────────────────┘
- *
- * Data flow:
- *   GET /api/agents/available → All registered agents
- *   GET /api/agents/marketplace → Community agents
- *   POST /api/agents/install/:id → Install agent
  */
 
 import React from 'react';
 
-export function AgentStore() {
-  return null; // Placeholder
+export function Settings() {
+  return null; // Placeholder for RN component tree
 }
+
+/**
+ * Data flow:
+ *   GET /api/integrations/available → Available integrations
+ *   GET /api/integrations/connections → User's connected integrations
+ *   POST /api/integrations/connect/:id → Start OAuth flow
+ *   GET /api/vault/export → Export all data
+ *   DELETE /api/vault/purge → Delete all data
+ */
