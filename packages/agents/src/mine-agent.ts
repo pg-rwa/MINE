@@ -141,19 +141,34 @@ export class MineAgent extends BaseAgent {
     // ─── AI-powered response (primary path) ─────────────
     // Give AI ALL the user's data so it has complete context
     const vaultData = this.getVaultDataSummary(context, MineAgent.ALL_CATEGORIES);
+
+    // Also check raw vault (bypass everything) to diagnose data issues
+    const rawEntries = context.vault.exportAll(context.userId);
+    console.log(`[MINE] User=${context.userId} | Raw vault entries: ${rawEntries.length} | Vault summary length: ${vaultData.length} chars`);
+    if (rawEntries.length > 0) {
+      const cats = rawEntries.reduce((acc: Record<string, number>, e) => { acc[e.category] = (acc[e.category] || 0) + 1; return acc; }, {});
+      console.log(`[MINE] Categories:`, JSON.stringify(cats));
+    }
+    if (vaultData) {
+      console.log(`[MINE] Vault summary preview: ${vaultData.slice(0, 300)}`);
+    }
+
     const aiResponse = await this.generateAIResponse(message, context, vaultData || undefined);
     if (aiResponse) {
       return this.respond(aiResponse, { suggestions: this.getSuggestionsFor(content) });
     }
 
     // ─── Fallback: pattern-matching when AI unavailable ──
+    // If user asks for summary/overview/data, show financial summary directly
+    if (content.includes('summar') || content.includes('data') || content.includes('overview') || content.includes('net worth') || content.includes('all')) {
+      return this.handleFinancialSummary(context);
+    }
     if (content.includes('emi') || content.includes('loan') || content.includes('installment')) return this.handleViewEMIs(context);
     if (content.includes('expense') || content.includes('spent') || content.includes('spending')) return this.handleViewExpenses(context);
     if (content.includes('income') || content.includes('salary')) return this.handleViewIncome(context);
     if (content.includes('property') || content.includes('properties')) return this.handleViewProperties(context);
     if (content.includes('tenant')) return this.handleViewTenants(context);
     if (content.includes('rent')) return this.handleViewRent(context);
-    if (content.includes('summary') || content.includes('net worth') || content.includes('overview')) return this.handleFinancialSummary(context);
     if (content.includes('budget')) return this.respond("What's your monthly budget limit?", { suggestions: ['$2000/month', '$5000/month', '$10000/month'] });
 
     // Generic welcome
@@ -245,6 +260,9 @@ Guidelines:
 
     if (extraContext) {
       prompt += `\n\n=== USER'S SAVED DATA (source of truth — ALWAYS use this, never ask for data already here) ===\n${extraContext}\n=== END OF SAVED DATA ===`;
+      prompt += `\n\nIMPORTANT OVERRIDE: The data above IS the user's actual saved data. Even if previous messages in the conversation said "no data" — IGNORE those old messages. The data section above is CURRENT and AUTHORITATIVE. Reference it now.`;
+    } else {
+      prompt += `\n\nNote: The user has no saved data yet. Help them get started by suggesting they add income, expenses, EMIs, or properties.`;
     }
 
     return prompt;
@@ -591,6 +609,40 @@ Guidelines:
   }
 
   private handleFinancialSummary(context: AgentContext): AgentResponse {
+    // First: show a full data inventory across ALL categories
+    const dataCounts: Record<string, number> = {};
+    let totalEntries = 0;
+    for (const category of MineAgent.ALL_CATEGORIES) {
+      try {
+        const entries = this.readVault(context, category);
+        if (entries.length > 0) {
+          dataCounts[category] = entries.length;
+          totalEntries += entries.length;
+        }
+      } catch { /* skip */ }
+    }
+
+    // Also check raw vault as ultimate fallback
+    if (totalEntries === 0) {
+      try {
+        const raw = context.vault.exportAll(context.userId);
+        if (raw.length > 0) {
+          for (const e of raw) {
+            dataCounts[e.category] = (dataCounts[e.category] || 0) + 1;
+            totalEntries++;
+          }
+        }
+      } catch { /* skip */ }
+    }
+
+    if (totalEntries === 0) {
+      return this.respond(
+        "No data saved yet. Let's get started! You can add your income, expenses, EMIs, properties, and more.",
+        { suggestions: ['Add income', 'Add expense', 'Add EMI', 'Add property'] }
+      );
+    }
+
+    // Build financial totals
     let totalIncome = 0, totalExpenses = 0, totalEMIs = 0, totalRentIncome = 0, propertyValue = 0;
 
     try { const i = this.readVault(context, 'income'); totalIncome = i.reduce((s, e) => s + (Number(e.data.amount) || 0), 0); } catch {}
@@ -606,7 +658,13 @@ Guidelines:
     const combinedIncome = totalIncome + totalRentIncome;
     const net = combinedIncome - totalOutflow;
 
-    let summary = `**Financial Summary**\n\nIncome:   $${totalIncome}`;
+    let summary = `**Your Data** (${totalEntries} total entries)\n`;
+    const catLines = Object.entries(dataCounts).map(([cat, count]) =>
+      `  ${cat.replace('_', ' ')}: ${count}`
+    ).join('\n');
+    summary += catLines;
+
+    summary += `\n\n**Financial Summary**\nIncome:   $${totalIncome}`;
     if (totalRentIncome > 0) summary += `\nRental:   $${totalRentIncome}`;
     summary += `\nExpenses: $${totalExpenses}\nEMIs:     $${totalEMIs}\n─────────────\nNet:      $${net} ${net >= 0 ? '(surplus)' : '(deficit)'}`;
     if (propertyValue > 0) summary += `\n\nProperty Assets: $${propertyValue}`;
