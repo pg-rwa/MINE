@@ -1,4 +1,4 @@
-import { AgentManifest, Message, AgentContext, AgentResponse, Insight, DataCategory } from '@mine/core';
+import { AgentManifest, Message, AgentContext, AgentResponse, Insight, DataCategory, VaultEntry } from '@mine/core';
 import { BaseAgent } from './base-agent';
 
 /**
@@ -145,6 +145,39 @@ export class MineAgent extends BaseAgent {
       if (content.includes('tenant')) return this.showAddTenantForm();
     }
 
+    // ─── Email / Gmail integration ──────────────────────
+    // Handle result selection (user clicked a search result)
+    const openMatch = message.content.match(/^open:(.+)$/);
+    if (openMatch) {
+      return this.handleEmailResultSelection(openMatch[1], context);
+    }
+
+    // Handle pending password input for encrypted PDF statements
+    const pendingStmt = context.recall('context').find(m => m.key === 'pending_statement' && (m.value as any)?.waitingForPassword);
+    if (pendingStmt) {
+      const pendingData = pendingStmt.value as any;
+      const looksLikePassword = content.length <= 30 && !content.includes('skip') && !content.includes('show') &&
+        !content.includes('search') && !content.includes('help') && !/^(yes|no|ok|cancel)$/i.test(content.trim());
+      if (looksLikePassword) {
+        return this.handleStatementPasswordAttempt(message.content.trim(), pendingData, context);
+      }
+      context.remember('pending_statement', { ...pendingData, waitingForPassword: false }, 'context');
+    }
+
+    // Email-specific routes
+    if (content.includes('statement')) {
+      return this.handleStatementRequest(message, context);
+    }
+    if (content.includes('email') || content.includes('inbox') || content.includes('mail')) {
+      return this.handleEmailSearch(message, context);
+    }
+    if (content.includes('transaction') && (content.includes('bank') || content.includes('email'))) {
+      return this.handleEmailTransactions(context);
+    }
+    if (content.includes('order') && (content.includes('track') || content.includes('delivery') || content.includes('shipped'))) {
+      return this.handleEmailOrders(context);
+    }
+
     // ─── AI-powered response (primary path) ─────────────
     // Give AI ALL the user's data so it has complete context
     let vaultData = this.getVaultDataSummary(context, MineAgent.ALL_CATEGORIES);
@@ -226,7 +259,7 @@ export class MineAgent extends BaseAgent {
   private readVault(context: AgentContext, category: DataCategory): any[] {
     try {
       // Try permission-checked path first
-      return this.readVault(context, category);
+      return context.vault.getForAgent(context.userId, context.agentId, category);
     } catch {
       // Fallback: query vault directly (no permission check)
       try {
@@ -866,5 +899,427 @@ Return ONLY a valid JSON array. No explanation.`;
     return this.respond(summary, {
       suggestions: ['Add income', 'Add expense', 'Show EMIs', 'My properties'],
     });
+  }
+
+  // ═══════════════════════════════════════════════════════
+  // ─── Email / Gmail Integration ─────────────────────────
+  // ═══════════════════════════════════════════════════════
+
+  private static readonly BANK_ALIASES: Record<string, string[]> = {
+    'sharjah islamic bank': ['sib', 'sharjah islamic', 'sib.ae'],
+    'emirates nbd': ['enbd', 'emirates nbd', 'emiratesnbd'],
+    'adcb': ['abu dhabi commercial', 'adcb'],
+    'mashreq': ['mashreq', 'mashreqbank'],
+    'dib': ['dubai islamic', 'dib'],
+    'fab': ['first abu dhabi', 'fab'],
+    'rakbank': ['rak bank', 'rakbank'],
+    'cbd': ['commercial bank of dubai', 'cbd'],
+    'hdfc': ['hdfc bank', 'hdfcbank'],
+    'icici': ['icici bank', 'icicibank'],
+    'sbi': ['state bank of india', 'sbi'],
+    'axis': ['axis bank', 'axisbank'],
+    'kotak': ['kotak mahindra', 'kotak'],
+    'hsbc': ['hsbc', 'hsbc bank'],
+    'sc': ['standard chartered', 'stanchart'],
+    'citi': ['citibank', 'citi'],
+  };
+
+  private extractSearchKeywords(content: string, originalContent?: string): string[] {
+    const keywords: string[] = [];
+    const lower = content.toLowerCase();
+
+    // Check for known bank aliases
+    for (const [fullName, aliases] of Object.entries(MineAgent.BANK_ALIASES)) {
+      if (aliases.some(a => lower.includes(a)) || lower.includes(fullName)) {
+        keywords.push(fullName);
+        for (const alias of aliases) {
+          if (lower.includes(alias)) keywords.push(alias);
+        }
+      }
+    }
+
+    // Extract quoted phrases
+    const quoted = content.match(/"([^"]+)"/g);
+    if (quoted) keywords.push(...quoted.map(q => q.replace(/"/g, '')));
+
+    // Extract capitalized multi-word phrases (bank/company names)
+    const cased = originalContent || content;
+    const entityPattern = /\b([A-Z][a-z]+(?:\s+(?:of|and|the|for)\s+)?(?:[A-Z][a-z]+)(?:\s+(?:of|and|the|for|[A-Z][a-z]+))*)\b/g;
+    let match;
+    while ((match = entityPattern.exec(cased)) !== null) {
+      const phrase = match[1].trim();
+      const words = phrase.split(/\s+/);
+      if (words.length >= 2 && !keywords.some(k => k.toLowerCase() === phrase.toLowerCase())) {
+        const skip = ['show', 'find', 'search', 'give', 'tell', 'let', 'get', 'check'];
+        if (!skip.some(s => phrase.toLowerCase().startsWith(s))) {
+          keywords.push(phrase.toLowerCase());
+        }
+      }
+    }
+
+    // Financial terms
+    const terms = ['statement', 'e-statement', 'loan', 'emi', 'insurance', 'credit card', 'balance'];
+    for (const t of terms) { if (lower.includes(t)) keywords.push(t); }
+
+    return [...new Set(keywords)];
+  }
+
+  private extractBankNameFromKeywords(keywords: string[]): string | null {
+    for (const [fullName] of Object.entries(MineAgent.BANK_ALIASES)) {
+      if (keywords.some(k => k.toLowerCase() === fullName)) {
+        return fullName.split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+      }
+    }
+    return null;
+  }
+
+  private async handleEmailSearch(message: Message, context: AgentContext): Promise<AgentResponse> {
+    const gmail = context.checkIntegration('gmail');
+
+    if (!gmail.connected) {
+      return this.respond(
+        "Gmail is not connected. Connect it via **Settings → Integrations** to search emails, track transactions, and view bank statements.",
+        { suggestions: ['Connect Gmail'] }
+      );
+    }
+
+    const keywords = this.extractSearchKeywords(message.content.toLowerCase(), message.content);
+    if (keywords.length === 0) {
+      // General email summary — show what we have from vault
+      const transactions = this.readVault(context, 'transactions');
+      const orders = this.readVault(context, 'orders');
+      const bills = this.readVault(context, 'bills');
+
+      if (transactions.length === 0 && orders.length === 0 && bills.length === 0) {
+        return this.respond(
+          "Gmail is connected but no email data has been synced yet. Try searching for something specific!",
+          { suggestions: ['Show transactions', 'SIB statement', 'Track orders', 'Show bills'] }
+        );
+      }
+
+      let summary = `**Email Data Summary**\n`;
+      if (transactions.length > 0) summary += `\nTransactions: ${transactions.length}`;
+      if (orders.length > 0) summary += `\nOrders: ${orders.length}`;
+      if (bills.length > 0) summary += `\nBills: ${bills.length}`;
+      return this.respond(summary, { suggestions: ['Show transactions', 'Show orders', 'Show bills', 'Search statements'] });
+    }
+
+    // Search Gmail with extracted keywords
+    return this.handleGmailSearch(keywords, context);
+  }
+
+  private async handleGmailSearch(keywords: string[], context: AgentContext): Promise<AgentResponse> {
+    // First check vault
+    const allEntries: VaultEntry[] = [];
+    for (const cat of ['transactions', 'orders', 'bills', 'income', 'expenses'] as DataCategory[]) {
+      allEntries.push(...this.readVault(context, cat));
+    }
+
+    const vaultMatches = allEntries.filter(e => {
+      const text = JSON.stringify(e.data).toLowerCase();
+      return keywords.some(k => text.includes(k.toLowerCase()));
+    });
+
+    if (vaultMatches.length > 0) {
+      return this.formatEmailResults(vaultMatches, keywords, context);
+    }
+
+    // Live Gmail search
+    try {
+      const liveResults = await context.searchIntegration('gmail', keywords);
+      if (liveResults.length > 0) {
+        context.remember('search_results', {
+          results: liveResults.slice(0, 15),
+          keywords,
+          bankName: this.extractBankNameFromKeywords(keywords),
+        }, 'context');
+
+        return this.buildResultActions(liveResults, keywords);
+      }
+    } catch (err: any) {
+      console.error('[MINE] Gmail search error:', err.message);
+    }
+
+    return this.respond(
+      `No results found for "${keywords.join(', ')}". Try different keywords.`,
+      { suggestions: ['Try different search', 'Show transactions'] }
+    );
+  }
+
+  private async handleStatementRequest(message: Message, context: AgentContext): Promise<AgentResponse> {
+    const gmail = context.checkIntegration('gmail');
+    if (!gmail.connected) {
+      return this.respond("Connect Gmail via **Settings → Integrations** to search bank statements.", { suggestions: ['Connect Gmail'] });
+    }
+
+    const keywords = this.extractSearchKeywords(message.content.toLowerCase(), message.content);
+    keywords.push('statement');
+
+    // Always search Gmail fresh for statements
+    try {
+      const liveResults = await context.searchIntegration('gmail', keywords);
+
+      if (liveResults.length === 0) {
+        // Fall back to vault
+        const vaultEntries = this.readVault(context, 'transactions');
+        const stmts = vaultEntries.filter((e: any) => e.data?.type === 'statement');
+        if (stmts.length === 0) {
+          return this.respond(`No statements found for "${keywords.join(', ')}".`, { suggestions: ['Try different search', 'Show transactions'] });
+        }
+        return this.formatEmailResults(stmts, keywords, context);
+      }
+
+      context.remember('search_results', {
+        results: liveResults.slice(0, 15),
+        keywords,
+        bankName: this.extractBankNameFromKeywords(keywords),
+      }, 'context');
+
+      return this.buildResultActions(liveResults, keywords);
+    } catch (err: any) {
+      return this.respond(`Error searching Gmail: ${err.message}`, { suggestions: ['Try again'] });
+    }
+  }
+
+  private async handleEmailResultSelection(key: string, context: AgentContext): Promise<AgentResponse> {
+    const stored = context.recall('context').find(m => m.key === 'search_results');
+    const searchData = stored?.value as any;
+
+    if (!searchData) {
+      return this.respond("Search results expired. Let me search again.", { suggestions: ['Search statements'] });
+    }
+
+    const result = searchData.results.find((r: any) => r.key === key);
+    if (!result) {
+      return this.respond("Couldn't find that result.", { suggestions: ['Search again'] });
+    }
+
+    const d = result.data;
+    const gmail = context.checkIntegration('gmail');
+    if (!gmail.connected) {
+      return this.respond("Gmail disconnected. Please reconnect.", { suggestions: ['Reconnect Gmail'] });
+    }
+
+    // Re-fetch from Gmail for fresh messageId/attachmentIds
+    let messageId = d.messageId as string | undefined;
+    let attachmentIds = d.attachmentIds as Array<{ id: string; filename: string; mimeType: string }> | undefined;
+
+    try {
+      const freshResults = await context.searchIntegration('gmail', searchData.keywords);
+      const freshMatch = freshResults.find((r: any) => r.key === key);
+      if (freshMatch) {
+        messageId = freshMatch.data.messageId as string | undefined;
+        attachmentIds = freshMatch.data.attachmentIds as Array<{ id: string; filename: string; mimeType: string }> | undefined;
+        if (freshMatch.data.passwordHint) d.passwordHint = freshMatch.data.passwordHint;
+      }
+    } catch { /* use stored data */ }
+
+    const pdfAttachment = attachmentIds?.find(a =>
+      a.mimeType === 'application/pdf' || a.filename.toLowerCase().endsWith('.pdf')
+    );
+
+    if (!messageId || !pdfAttachment) {
+      // No downloadable PDF — show email content
+      const label = (d.description || d.subject || 'Email') as string;
+      let text = `**${label}**\n`;
+      if (d.date) text += `Date: ${new Date(d.date as string).toLocaleDateString()}\n`;
+      if (d.source) text += `From: ${d.source}\n\n`;
+      text += ((d.body || d.description || 'No content available') as string).slice(0, 1000);
+      return this.respond(text, { suggestions: ['Search for more', 'Show transactions'] });
+    }
+
+    // Download PDF
+    try {
+      const pdfBuffer = await context.downloadAttachment('gmail', messageId, pdfAttachment.id);
+      if (!pdfBuffer) {
+        return this.respond(`Failed to download **${pdfAttachment.filename}**.`, { suggestions: ['Try again'] });
+      }
+
+      const parseResult = await this.extractPdfAsync(pdfBuffer, undefined);
+
+      if (parseResult.error === 'password_required') {
+        let hint = d.passwordHint as string | undefined;
+        if (!hint && messageId) {
+          try {
+            const emailData = await context.fetchEmailBody('gmail', messageId);
+            if (emailData?.passwordHint) hint = emailData.passwordHint;
+          } catch { /* ignore */ }
+        }
+
+        context.remember('pending_statement', {
+          statementKey: key, bankName: searchData.bankName,
+          keywords: searchData.keywords, messageId,
+          attachmentId: pdfAttachment.id, filename: pdfAttachment.filename,
+          passwordHint: hint, waitingForPassword: true,
+        }, 'context');
+
+        let pwText = `**${d.description || d.subject || 'Statement'}**\n📎 ${pdfAttachment.filename}\n\n`;
+        pwText += `🔒 **This PDF is password-protected.**\n\n`;
+        if (hint) {
+          pwText += `From the email: **${hint}**\n\n`;
+        } else {
+          pwText += `Common passwords:\n• Date of birth (DDMMYY or DDMMYYYY)\n• PAN number\n• Last 4 digits of account number\n\n`;
+        }
+        pwText += `**Type the password below** and I'll open it.`;
+        return this.respond(pwText, { suggestions: ['Skip this one', 'Show other results'] });
+      }
+
+      if (parseResult.error) {
+        return this.respond(`Error reading PDF: ${parseResult.error}`, { suggestions: ['Try again'] });
+      }
+
+      // Success
+      const preview = parseResult.text.length > 2000 ? parseResult.text.slice(0, 2000) + '\n\n_...truncated_' : parseResult.text;
+      const bankName = searchData.bankName || '';
+      let text = `**${bankName ? bankName + ' ' : ''}Statement** (${parseResult.pages} pages)\n📄 ${pdfAttachment.filename}\n\n`;
+      text += '```\n' + preview + '\n```\n\nI can analyze this — transactions, balances, or specifics.';
+
+      context.remember(`statement_text_${key}`, { text: parseResult.text, pages: parseResult.pages, bankName }, 'context');
+      return this.respond(text, { suggestions: ['Summarize transactions', 'Show closing balance', 'List all debits'] });
+    } catch (err: any) {
+      return this.respond(`Error downloading PDF: ${err?.message}`, { suggestions: ['Try again'] });
+    }
+  }
+
+  private async handleStatementPasswordAttempt(
+    password: string,
+    pendingData: any,
+    context: AgentContext
+  ): Promise<AgentResponse> {
+    let { messageId, attachmentId } = pendingData;
+    const filename = pendingData.filename || 'statement.pdf';
+
+    if (!messageId || !attachmentId) {
+      context.remember('pending_statement', { ...pendingData, waitingForPassword: false }, 'context');
+      return this.respond("Couldn't find the statement. Let me search again.", { suggestions: ['Search statements'] });
+    }
+
+    const gmail = context.checkIntegration('gmail');
+    if (!gmail.connected) {
+      return this.respond("Gmail disconnected. Please reconnect.", { suggestions: ['Reconnect Gmail'] });
+    }
+
+    try {
+      const pdfBuffer = await context.downloadAttachment('gmail', messageId, attachmentId);
+      if (!pdfBuffer) {
+        return this.respond("Failed to download PDF.", { suggestions: ['Try again'] });
+      }
+
+      const result = await this.extractPdfAsync(pdfBuffer, password);
+
+      if (result.error === 'password_required' || result.error === 'incorrect_password') {
+        let hint = pendingData.passwordHint;
+        if (!hint && messageId) {
+          try {
+            const emailData = await context.fetchEmailBody('gmail', messageId);
+            if (emailData?.passwordHint) {
+              hint = emailData.passwordHint;
+              context.remember('pending_statement', { ...pendingData, passwordHint: hint }, 'context');
+            }
+          } catch { /* ignore */ }
+        }
+
+        let text = `**Incorrect password.**\n\n`;
+        if (hint) text += `Hint from email: **${hint}**\n\n`;
+        else text += `Try: DOB (DDMMYY), PAN number, or last 4 digits of account.\n\n`;
+        text += `Type the correct password:`;
+        return this.respond(text, { suggestions: ['Skip this statement'] });
+      }
+
+      if (result.error) {
+        context.remember('pending_statement', { ...pendingData, waitingForPassword: false }, 'context');
+        return this.respond(`Error: ${result.error}`, { suggestions: ['Search for more'] });
+      }
+
+      // Success
+      context.remember('pending_statement', { ...pendingData, waitingForPassword: false }, 'context');
+      const preview = result.text.length > 2000 ? result.text.slice(0, 2000) + '\n\n_...truncated_' : result.text;
+      const bankLabel = pendingData.bankName || 'Bank';
+      let text = `**${bankLabel} Statement** (${result.pages} pages)\n📄 ${filename}\n\n`;
+      text += '```\n' + preview + '\n```\n\nI can analyze this statement for you.';
+
+      context.remember(`statement_text_${pendingData.statementKey}`, { text: result.text, pages: result.pages }, 'context');
+      return this.respond(text, { suggestions: ['Summarize transactions', 'Show closing balance', 'List all debits'] });
+    } catch (err: any) {
+      context.remember('pending_statement', { ...pendingData, waitingForPassword: false }, 'context');
+      return this.respond(`Error: ${err?.message}`, { suggestions: ['Try again'] });
+    }
+  }
+
+  private handleEmailTransactions(context: AgentContext): AgentResponse {
+    const entries = this.readVault(context, 'transactions');
+
+    if (entries.length === 0) {
+      const gmail = context.checkIntegration('gmail');
+      if (gmail.connected) {
+        return this.respond(
+          "Gmail connected but no transactions found yet. Transactions are extracted when you search or sync emails.",
+          { suggestions: ['Search transactions', 'Show SIB transactions', 'Show HDFC transactions'] }
+        );
+      }
+      return this.respond("No transactions yet. Connect Gmail to auto-detect bank transactions.", { suggestions: ['Connect Gmail'] });
+    }
+
+    const recent = entries.slice(-10);
+    const lines = recent.map((e: any) => {
+      const d = e.data;
+      const icon = d.type === 'credit' ? '🟢' : d.type === 'debit' ? '🔴' : '📧';
+      const amount = d.amount ? `₹${Number(d.amount).toLocaleString()}` : '';
+      return `${icon} ${d.description || d.name || e.key} ${amount} ${d.date ? '· ' + new Date(d.date).toLocaleDateString() : ''}`;
+    }).join('\n');
+
+    return this.respond(`**Recent Transactions** (${entries.length} total)\n\n${lines}`, {
+      suggestions: ['Search statements', 'Show all transactions', 'Show orders'],
+    });
+  }
+
+  private handleEmailOrders(context: AgentContext): AgentResponse {
+    const entries = this.readVault(context, 'orders');
+
+    if (entries.length === 0) {
+      return this.respond("No orders tracked yet. Connect Gmail to auto-detect order confirmations.", {
+        suggestions: ['Connect Gmail', 'Show transactions'],
+      });
+    }
+
+    const recent = entries.slice(-10);
+    const lines = recent.map((e: any) => {
+      const d = e.data;
+      const icon = d.status === 'shipped' ? '🚚' : d.status === 'delivered' ? '✅' : '📦';
+      return `${icon} ${d.description || d.name || e.key} ${d.amount ? '· ₹' + Number(d.amount).toLocaleString() : ''} ${d.platform ? '· ' + d.platform : ''}`;
+    }).join('\n');
+
+    return this.respond(`**Recent Orders** (${entries.length} total)\n\n${lines}`, {
+      suggestions: ['Show transactions', 'Track deliveries'],
+    });
+  }
+
+  private formatEmailResults(entries: any[], keywords: string[], context: AgentContext): AgentResponse {
+    const results = entries.slice(0, 15).map((e: any) => ({ category: e.category, key: e.key, data: e.data }));
+    context.remember('search_results', { results, keywords, bankName: this.extractBankNameFromKeywords(keywords) }, 'context');
+    return this.buildResultActions(results, keywords);
+  }
+
+  private buildResultActions(results: Array<{ key: string; data: Record<string, unknown> }>, keywords: string[]): AgentResponse {
+    const actions: Array<{ type: 'select_item'; payload: Record<string, unknown> }> = [];
+
+    for (let i = 0; i < Math.min(results.length, 15); i++) {
+      const r = results[i];
+      const d = r.data;
+      const dateStr = d.date ? new Date(d.date as string).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '';
+      const hasPdf = d.hasAttachment && (d.attachments as any[])?.some((a: any) =>
+        a.name?.toLowerCase().endsWith('.pdf') || a.mimeType === 'application/pdf');
+      const icon = d.type === 'credit' ? '🟢' : d.type === 'debit' ? '🔴' : hasPdf ? '📄' : '📧';
+      const label = (d.description || d.name || d.subject || r.key) as string;
+      const amountStr = d.amount ? `₹${typeof d.amount === 'number' ? (d.amount as number).toLocaleString() : d.amount}` : '';
+      const subtitle = [dateStr, amountStr, d.source as string].filter(Boolean).join(' · ');
+
+      actions.push({
+        type: 'select_item',
+        payload: { key: r.key, label, subtitle, icon, message: `open:${r.key}` },
+      });
+    }
+
+    return this.respond(`Found **${results.length} result(s)** for "${keywords.join(', ')}". Tap to open:`, { actions });
   }
 }
