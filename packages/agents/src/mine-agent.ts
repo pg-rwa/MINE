@@ -87,6 +87,40 @@ export class MineAgent extends BaseAgent {
     'documents', 'notes', 'bookmarks',
   ];
 
+  // ─── Lifecycle: auto-grant permissions for ALL data ──
+
+  async onActivate(context: AgentContext): Promise<void> {
+    await super.onActivate(context);
+
+    // Grant the unified MINE agent read/write access to ALL data categories.
+    // This is essential because existing data was saved under old agent IDs
+    // (finance, property, etc.) and the permission system checks by agentId.
+    for (const category of MineAgent.ALL_CATEGORIES) {
+      try {
+        const check = context.permissions.check(context.userId, context.agentId, category, 'read');
+        if (!check.granted) {
+          context.permissions.grant(context.userId, {
+            agentId: context.agentId,
+            resource: category,
+            level: 'act_autonomously',
+            actions: ['read', 'write', 'delete'],
+            reason: 'Unified MINE agent requires access to all user data',
+            duration: 'permanent',
+          });
+        }
+      } catch {
+        context.permissions.grant(context.userId, {
+          agentId: context.agentId,
+          resource: category,
+          level: 'act_autonomously',
+          actions: ['read', 'write', 'delete'],
+          reason: 'Unified MINE agent requires access to all user data',
+          duration: 'permanent',
+        });
+      }
+    }
+  }
+
   async handleMessage(message: Message, context: AgentContext): Promise<AgentResponse> {
     const content = message.content.toLowerCase();
 
