@@ -147,7 +147,7 @@ export class MineAgent extends BaseAgent {
 
     // ─── AI-powered response (primary path) ─────────────
     // Give AI ALL the user's data so it has complete context
-    const vaultData = this.getVaultDataSummary(context, MineAgent.ALL_CATEGORIES);
+    let vaultData = this.getVaultDataSummary(context, MineAgent.ALL_CATEGORIES);
 
     // Also check raw vault (bypass everything) to diagnose data issues
     const rawEntries = context.vault.exportAll(context.userId);
@@ -156,6 +156,37 @@ export class MineAgent extends BaseAgent {
       const cats = rawEntries.reduce((acc: Record<string, number>, e) => { acc[e.category] = (acc[e.category] || 0) + 1; return acc; }, {});
       console.log(`[MINE] Categories:`, JSON.stringify(cats));
     }
+
+    // ─── Auto-migration: if vault is empty but old chats exist, migrate now ──
+    if (rawEntries.length === 0) {
+      const oldMessages = context.getOldAgentMessages();
+      if (oldMessages.length > 0) {
+        console.log(`[MINE] Vault empty but ${oldMessages.length} old messages found — auto-migrating`);
+        const migrationResult = await this.handleDataMigration(context);
+        // After migration, re-check vault
+        vaultData = this.getVaultDataSummary(context, MineAgent.ALL_CATEGORIES);
+        const newEntries = context.vault.exportAll(context.userId);
+        console.log(`[MINE] Post-migration: ${newEntries.length} vault entries, summary: ${vaultData.length} chars`);
+        if (newEntries.length > 0) {
+          // Migration worked — tell the user, then continue to answer their question
+          const migrationNote = migrationResult.content.split('\n')[0]; // First line
+          // Re-run with the new vault data
+          const aiResponse = await this.generateAIResponse(message, context, vaultData || undefined);
+          if (aiResponse) {
+            return this.respond(
+              `**Data recovered from old conversations!**\n\n---\n\n${aiResponse}`,
+              { suggestions: this.getSuggestionsFor(content) }
+            );
+          }
+          // If AI still fails, return migration result directly
+          return migrationResult;
+        } else {
+          // Migration found messages but couldn't extract data
+          console.log(`[MINE] Auto-migration extracted 0 items from ${oldMessages.length} messages`);
+        }
+      }
+    }
+
     if (vaultData) {
       console.log(`[MINE] Vault summary preview: ${vaultData.slice(0, 300)}`);
     }
@@ -204,6 +235,64 @@ export class MineAgent extends BaseAgent {
         return [];
       }
     }
+  }
+
+  /**
+   * Override: generate AI response with cleaned conversation history.
+   * When vault data exists, we strip old assistant messages that claim "no data"
+   * to prevent the AI from parroting its own incorrect past responses.
+   */
+  protected async generateAIResponse(
+    message: Message,
+    context: AgentContext,
+    extraContext?: string
+  ): Promise<string> {
+    if (!context.aiEngine.isAvailable) return '';
+
+    const systemPrompt = this.buildSystemPrompt(context, extraContext);
+
+    // Get recent conversation history
+    let history = context.getRecentHistory(20);
+
+    // If we have vault data, filter out poisoned history where AI incorrectly said "no data"
+    if (extraContext && extraContext.length > 0) {
+      const noDataPatterns = [
+        'no data saved',
+        'no data for you',
+        'nothing has been logged',
+        'no data has actually been',
+        'no saved data',
+        'haven\'t saved any',
+        'start sharing',
+        'cannot access previous',
+        'I still have no',
+      ];
+
+      history = history.filter(h => {
+        if (h.role !== 'assistant') return true;
+        const lower = h.content.toLowerCase();
+        return !noDataPatterns.some(p => lower.includes(p));
+      });
+    }
+
+    // Also limit to last 6 messages to reduce noise from old patterns
+    if (history.length > 6) {
+      history = history.slice(-6);
+    }
+
+    const result = await context.aiEngine.chat(systemPrompt, message.content, {
+      maxTokens: 1024,
+      history: history.map(h => ({
+        role: h.role,
+        content: h.content,
+      })),
+    });
+
+    if (result.startsWith('[AI ')) {
+      console.warn(`Agent ${context.agentId}: AI unavailable, falling back to rule-based response`);
+      return '';
+    }
+    return result;
   }
 
   /**
