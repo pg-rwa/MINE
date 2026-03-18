@@ -129,6 +129,13 @@ export class MineAgent extends BaseAgent {
       return this.handleFormSubmit(message, context);
     }
 
+    // ─── Data migration from old agents ─────────────────
+    if (content.includes('import') || content.includes('migrate') || content.includes('recover') || content.includes('rebuild')) {
+      if (content.includes('data') || content.includes('old') || content.includes('history') || content.includes('chat')) {
+        return this.handleDataMigration(context);
+      }
+    }
+
     // ─── ADD flows — show structured forms ──────────────
     if (content.includes('add') || content.includes('log') || content.includes('record')) {
       if (content.includes('emi') || content.includes('loan')) return this.showAddEMIForm(content);
@@ -605,6 +612,104 @@ Guidelines:
       return this.respond(`Rent records:\n\n${lines}`, { suggestions: ['Add a tenant', 'My properties'] });
     } catch {
       return this.respond("No rent data yet.", { suggestions: ['My properties'] });
+    }
+  }
+
+  private async handleDataMigration(context: AgentContext): Promise<AgentResponse> {
+    try {
+      const oldMessages = context.getOldAgentMessages();
+
+      if (oldMessages.length === 0) {
+        return this.respond(
+          "No old agent conversations found to migrate. Your previous chats may have been on a different database.\n\nYou can start fresh by adding your data now!",
+          { suggestions: ['Add income', 'Add expense', 'Add EMI', 'Add property'] }
+        );
+      }
+
+      // Group by agent
+      const byAgent: Record<string, string[]> = {};
+      for (const m of oldMessages) {
+        if (!byAgent[m.agentId]) byAgent[m.agentId] = [];
+        byAgent[m.agentId].push(m.content);
+      }
+
+      const agentCategoryMap: Record<string, string[]> = {
+        finance: ['income', 'expenses', 'emis'],
+        property: ['properties', 'tenants', 'rent_records'],
+        fitness: ['health'],
+        trading: ['investments'],
+        shopping: ['shopping'],
+        cooking: ['recipes'],
+        tax: ['tax'],
+        utility: ['bills'],
+      };
+
+      let totalExtracted = 0;
+      const migrationResults: string[] = [];
+
+      for (const [agentId, msgs] of Object.entries(byAgent)) {
+        const categories = agentCategoryMap[agentId];
+        if (!categories) continue;
+
+        // Take last 40 messages per agent to stay within token limits
+        const chatText = msgs.slice(-40).join('\n---\n');
+
+        const prompt = `Extract ALL concrete data items from these ${agentId} agent conversation messages. Only include items where actual numbers/details were shared.
+
+Each item MUST be a JSON object with:
+- "category": one of [${categories.join(', ')}]
+- "key": short unique identifier
+- "data": object with the actual fields
+
+For income: data={source, amount, frequency}
+For expenses: data={name, amount, category}
+For emis: data={name, amount, lender, tenure}
+For properties: data={name, location, type, purchasePrice, rentAmount}
+For tenants: data={name, property, rentAmount}
+For investments: data={name, type, amount, platform}
+For health: data={type, value, unit}
+
+Messages:
+${chatText}
+
+Return ONLY a valid JSON array. No explanation.`;
+
+        try {
+          const result = await context.aiEngine.complete(prompt, { tier: 'fast', maxTokens: 4000 });
+          const jsonMatch = result.match(/\[[\s\S]*\]/);
+          if (jsonMatch) {
+            const items = JSON.parse(jsonMatch[0]);
+            let agentCount = 0;
+            for (const item of items) {
+              if (item.key && item.data && item.category) {
+                context.vault.put(context.userId, item.category, item.key, item.data, 'migration');
+                agentCount++;
+                totalExtracted++;
+              }
+            }
+            if (agentCount > 0) {
+              migrationResults.push(`${agentId}: ${agentCount} items recovered`);
+            }
+          }
+        } catch (err: any) {
+          console.error(`[MINE] Migration error for ${agentId}:`, err.message);
+          migrationResults.push(`${agentId}: error — ${err.message}`);
+        }
+      }
+
+      if (totalExtracted === 0) {
+        return this.respond(
+          `Found ${oldMessages.length} old messages across ${Object.keys(byAgent).length} agents, but couldn't extract structured data. The conversations may have been general chat without specific numbers.\n\nYou can add your data fresh:`,
+          { suggestions: ['Add income', 'Add expense', 'Add EMI', 'Add property'] }
+        );
+      }
+
+      return this.respond(
+        `**Data recovered!** Extracted ${totalExtracted} items from old conversations.\n\n${migrationResults.join('\n')}\n\nYour data is now available. Try asking for a summary!`,
+        { suggestions: ['Financial summary', 'Show my EMIs', 'My properties', 'Show expenses'] }
+      );
+    } catch (err: any) {
+      return this.respond(`Migration error: ${err.message}. You can also try POST /api/vault/migrate.`);
     }
   }
 

@@ -77,6 +77,9 @@ export interface AgentContext {
   /** Get recent conversation history with this agent */
   getRecentHistory(limit?: number): Array<{ role: string; content: string }>;
 
+  /** Get all old agent messages for migration (excludes current agent) */
+  getOldAgentMessages(): Array<{ agentId: string; content: string; createdAt: string }>;
+
   /** Check if an integration is connected for this user */
   checkIntegration(integrationId: string): { connected: boolean; status?: string; lastSync?: Date };
 
@@ -443,6 +446,14 @@ export class AgentRuntime extends EventEmitter<RuntimeEvents> {
       getRecentHistory: (limit = 10) => {
         if (!persistence) return [];
         return persistence.getRecentAgentContext(userId, agentId, limit);
+      },
+
+      getOldAgentMessages: () => {
+        if (!persistence) return [];
+        return [
+          ...persistence.getOldUserMessages(userId),
+          ...persistence.getOldAgentMessages(userId),
+        ].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
       },
 
       checkIntegration: (integrationId: string) => {

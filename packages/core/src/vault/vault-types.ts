@@ -6,7 +6,7 @@ export interface VaultEntry {
   category: DataCategory;
   key: string;
   data: Record<string, unknown>;
-  source: 'manual' | 'integration' | 'agent';
+  source: 'manual' | 'integration' | 'agent' | 'migration';
   sourceId?: string; // integration or agent ID
   createdAt: Date;
   updatedAt: Date;

@@ -424,6 +424,37 @@ export class PersistenceLayer {
     })).reverse(); // Return in chronological order
   }
 
+  /**
+   * Get all assistant messages from old (non-mine) agents for a user.
+   * Used to reconstruct vault data from historical conversations.
+   */
+  getOldAgentMessages(userId: string): Array<{ agentId: string; content: string; createdAt: string }> {
+    return this.db.prepare(`
+      SELECT agent_id, content, created_at FROM chat_history
+      WHERE user_id = ? AND role = 'assistant' AND agent_id != 'mine' AND agent_id IS NOT NULL
+      ORDER BY created_at ASC
+    `).all(userId).map(row => ({
+      agentId: (row as any).agent_id,
+      content: (row as any).content,
+      createdAt: (row as any).created_at,
+    }));
+  }
+
+  /**
+   * Get all user messages from old agents — these contain the raw data the user entered.
+   */
+  getOldUserMessages(userId: string): Array<{ agentId: string; content: string; createdAt: string }> {
+    return this.db.prepare(`
+      SELECT agent_id, content, created_at FROM chat_history
+      WHERE user_id = ? AND role = 'user' AND agent_id != 'mine' AND agent_id IS NOT NULL
+      ORDER BY created_at ASC
+    `).all(userId).map(row => ({
+      agentId: (row as any).agent_id,
+      content: (row as any).content,
+      createdAt: (row as any).created_at,
+    }));
+  }
+
   // ─── Connection Persistence ─────────────────────────
 
   saveConnection(conn: {
